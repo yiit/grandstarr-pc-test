@@ -187,9 +187,20 @@ PS_CRITICAL = r"""
 $since=(Get-Date).AddDays(-90)
 $whea=0
 try{$whea=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WHEA-Logger';StartTime=$since} -ErrorAction Stop|Where-Object{$_.Level -le 3}).Count}catch{}
-$diskerr=0
+# sistem diski numarasi (C: hangi diskte)
+$sysnum=-1
+try{$sysnum=(Get-Partition -DriveLetter ($env:SystemDrive.TrimEnd(':')) -ErrorAction Stop|Get-Disk -ErrorAction Stop).Number}catch{}
+$dsys=0; $dusb=0; $ditems=@()
 foreach($p in 'disk','Disk','Ntfs','volmgr','storahci','stornvme','iaStorA'){
-  try{$diskerr+=@(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName=$p;Level=1,2;StartTime=$since} -ErrorAction Stop).Count}catch{}
+  try{
+    foreach($e in @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName=$p;Level=1,2;StartTime=$since} -ErrorAction Stop)){
+      $m="$($e.Message)"; $dn=-1
+      if($m -match 'Harddisk(\d+)'){ $dn=[int]$Matches[1] }
+      $isUsb = ($dn -ge 0 -and $sysnum -ge 0 -and $dn -ne $sysnum)
+      if($isUsb){$dusb++}else{$dsys++}
+      $ditems+=[pscustomobject]@{time=$e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss');dev=$(if($dn -ge 0){"Disk$dn"}else{$p});usb=$isUsb}
+    }
+  }catch{}
 }
 $bsod=0
 foreach($pp in @(@{p='Microsoft-Windows-WER-SystemErrorReporting';i=1001},@{p='BugCheck';i=1001})){
@@ -197,7 +208,7 @@ foreach($pp in @(@{p='Microsoft-Windows-WER-SystemErrorReporting';i=1001},@{p='B
 }
 $oldest=''
 try{$o=Get-WinEvent -LogName System -MaxEvents 1 -Oldest -ErrorAction Stop;$oldest=$o.TimeCreated.ToString('yyyy-MM-dd')}catch{}
-[pscustomobject]@{whea=$whea;diskerr=$diskerr;bsod=$bsod;log_oldest=$oldest}|ConvertTo-Json -Compress
+[pscustomobject]@{whea=$whea;disk_sys=$dsys;disk_usb=$dusb;sysnum=$sysnum;disk_items=$ditems;bsod=$bsod;log_oldest=$oldest}|ConvertTo-Json -Depth 4 -Compress
 """
 
 PS_RESET_HIST = r"""
@@ -1315,22 +1326,32 @@ class Wizard:
         crit = crit or {}
         self.critical = crit
         whea = crit.get("whea") or 0
-        diskerr = crit.get("diskerr") or 0
+        dsys = crit.get("disk_sys") or 0          # sistem diski hatalari (ciddi)
+        dusb = crit.get("disk_usb") or 0          # USB/harici disk hatalari (cogu zaman zararsiz)
         bsod = crit.get("bsod") or 0
         oldest = crit.get("log_oldest") or ""
         rstatus = "WARN" if unexp else "PASS"
         lines.append("")
-        lines.append(f"Donanim hatasi (WHEA): {whea}   |   Disk/dosya sistemi hatasi: {diskerr}   |   Mavi ekran (BSOD): {bsod}")
+        lines.append(f"Donanim hatasi (WHEA): {whea}   |   Sistem diski hatasi: {dsys}   |   "
+                     f"USB/harici disk hatasi: {dusb}   |   Mavi ekran (BSOD): {bsod}")
         self.record("Kritik", "Donanim hatasi (WHEA)", whea, "FAIL" if whea else "PASS")
-        self.record("Kritik", "Disk/dosya sistemi hatasi", diskerr, "WARN" if diskerr else "PASS")
+        self.record("Kritik", "Sistem diski hatasi", dsys, "WARN" if dsys else "PASS")
+        self.record("Kritik", "USB/harici disk hatasi", dusb, "INFO")
         self.record("Kritik", "Mavi ekran (BSOD)", bsod, "WARN" if bsod else "PASS")
         if whea:
             self.add_risk(f"{whea} WHEA donanim hatasi (CPU/RAM/PCIe) — ciddi; donanimi kontrol edin/degistirin.")
             rstatus = "FAIL"
-        if diskerr:
-            self.add_risk(f"{diskerr} disk/dosya sistemi hatasi olayi — disk veya kablo/baglanti sorunu olabilir.")
+        if dsys:
+            self.add_risk(f"{dsys} SISTEM DISKI hatasi — ic disk veya SATA/NVMe baglanti/kablo sorunu olabilir, kontrol edin.")
             if rstatus == "PASS":
                 rstatus = "WARN"
+        if dusb:
+            # USB/harici disk hatasi -> bilgi; gunluk cihazlari listele
+            items = crit.get("disk_items") or []
+            usbi = [i for i in items if i.get("usb")][:4]
+            lines.append(f"  (USB/harici disk hatalari — guvenli-kaldir yapilmadan cikarma vb., ic diskle ilgisiz):")
+            for i in usbi:
+                lines.append(f"    {i.get('time','')}  {i.get('dev','')}")
         if bsod:
             self.add_risk(f"{bsod} mavi ekran (BSOD) olayi — sistem kararsizligi, surucu/donanim incelenmeli.")
             if rstatus == "PASS":
