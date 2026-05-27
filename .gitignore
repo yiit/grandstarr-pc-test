@@ -1,0 +1,21 @@
+# PyInstaller / build ciktilari
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# Test sirasinda uretilen raporlar (cihaza ozel, commit edilmez)
+test_*.html
+test_*.txt
+burnin_*.csv
+burnin_*.html
+reboot_*.csv
+reboot_*.html
+*_2*.txt
+ENDUARGE*_*.txt
+
+# Gecici
+_tmp_*
+_out.txt
+_err.txt
