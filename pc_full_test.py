@@ -71,7 +71,8 @@ $os=Get-CimInstance Win32_OperatingSystem
 $ramgb=[math]::Round(((Get-CimInstance Win32_PhysicalMemory|Measure-Object Capacity -Sum).Sum)/1GB,0)
 $disks=@(Get-PhysicalDisk|ForEach-Object{
   $rc=$_|Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
-  [pscustomobject]@{name=$_.FriendlyName;gb=[math]::Round($_.Size/1GB,0);media="$($_.MediaType)";bus="$($_.BusType)";health="$($_.HealthStatus)";temp=$rc.Temperature}})
+  [pscustomobject]@{name=$_.FriendlyName;gb=[math]::Round($_.Size/1GB,0);media="$($_.MediaType)";bus="$($_.BusType)";health="$($_.HealthStatus)";
+    temp=$rc.Temperature;wear=$rc.Wear;readErr=$rc.ReadErrorsTotal;writeErr=$rc.WriteErrorsTotal;poh=$rc.PowerOnHours}})
 $sys=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($env:SystemDrive)'"
 $res=Get-CimInstance Win32_VideoController|Where-Object{$_.CurrentHorizontalResolution}|Select-Object -First 1
 [pscustomobject]@{
@@ -81,7 +82,9 @@ $res=Get-CimInstance Win32_VideoController|Where-Object{$_.CurrentHorizontalReso
   os="$($os.Caption) $($os.OSArchitecture)"
   cpu=$cpu.Name.Trim(); cores=$cpu.NumberOfCores; threads=$cpu.NumberOfLogicalProcessors
   ramgb=$ramgb
+  rambanks=@(Get-CimInstance Win32_PhysicalMemory).Count
   sysdisk_gb=[math]::Round($sys.Size/1GB,0)
+  sysfree_gb=[math]::Round($sys.FreeSpace/1GB,0)
   disks=$disks
   gpu=((Get-CimInstance Win32_VideoController|Select-Object -ExpandProperty Name) -join '; ')
   res=$(if($res){"$($res.CurrentHorizontalResolution)x$($res.CurrentVerticalResolution)@$($res.CurrentRefreshRate)Hz"}else{''})
@@ -224,10 +227,14 @@ class Wizard:
         self.rows = []          # rapor satirlari: (kategori,test,deger,durum)
         self.inv = None
         self.reset_events = []
+        self.risks = []         # saha risk uyarilari
         self.stress_sec = EXPECTED["stress_seconds"]   # intro'da secilir
         self.stress_peak = None
         self.stress_csv = None
         self.minutes_var = tk.StringVar(value="1")
+        # hangi testler yapilacak (intro'da tiklenir) - 'done' her zaman calisir
+        self.enabled = {k: tk.BooleanVar(value=True)
+                        for k in ("screen", "touch", "grid", "inv", "stress", "ssd", "net", "reset")}
         self.step_state = {}    # key -> 'PASS'/'FAIL'/'WARN'/'...'
         self.sw = root.winfo_screenwidth()
         self.sh = root.winfo_screenheight()
@@ -267,13 +274,18 @@ class Wizard:
         tk.Label(bar, text="TUM TESTLER", font=("Segoe UI", 16, "bold"),
                  fg=ACC, bg=PANEL).pack(pady=(6, 18))
         for k, title, _ in self.sequence:
+            disabled = (k in self.enabled and not self.enabled[k].get())
             st = self.step_state.get(k, "")
             mark = {"PASS": "✓", "FAIL": "✗", "WARN": "!", "RUN": "•"}.get(st, "")
             col = {"PASS": GREEN, "FAIL": RED, "WARN": YEL, "RUN": ACC}.get(st, MUT)
             cur = (self.i >= 0 and self.sequence[self.i][0] == k)
-            tk.Label(bar, text=f"{mark}  {title}", anchor="w",
-                     font=("Segoe UI", 12, "bold" if cur else "normal"),
-                     fg=(FG if cur else col), bg=PANEL).pack(fill="x", padx=18, pady=4)
+            if disabled:
+                txt, col, mark = f"{title}  (atlandi)", "#3a4250", "○"
+            else:
+                txt = f"{mark}  {title}"
+            tk.Label(bar, text=txt, anchor="w",
+                     font=("Segoe UI", 12, "bold" if cur and not disabled else "normal"),
+                     fg=(FG if cur and not disabled else col), bg=PANEL).pack(fill="x", padx=18, pady=4)
         self.body = tk.Frame(self.root, bg=BG)
         self.body.pack(side="right", fill="both", expand=True)
         return self.body
@@ -286,22 +298,48 @@ class Wizard:
 
     def advance(self):
         self.i += 1
-        if self.i >= len(self.sequence):
-            return
-        self.sequence[self.i][2]()
+        # isaretsiz adimlari atla; 'done' (ozet) her zaman calisir
+        while self.i < len(self.sequence):
+            key = self.sequence[self.i][0]
+            if key == "done" or self.enabled.get(key, tk.BooleanVar(value=True)).get():
+                self.sequence[self.i][2]()
+                return
+            self.i += 1
+
+    def add_risk(self, msg):
+        """Sahada sorun cikarabilecek donanim -> uyari listesi + rapora WARN."""
+        self.risks.append(msg)
+        self.record("Saha Riski", "Uyari", msg, "WARN")
 
     # ---------- giris ----------
     def _intro(self):
         b = self._shell()
-        tk.Label(b, text="DOKUNMATIK PC  -  TAM TEST", font=("Segoe UI", 32, "bold"),
-                 fg=ACC, bg=BG).pack(pady=(90, 8))
-        tk.Label(b, text="Once EKRAN ve DOKUNMATIK testleri, ardindan donanim\n"
-                          "testleri sirayla otomatik yapilir.",
-                 font=("Segoe UI", 15), fg=MUT, bg=BG, justify="center").pack(pady=8)
+        tk.Label(b, text="DOKUNMATIK PC  -  TAM TEST", font=("Segoe UI", 28, "bold"),
+                 fg=ACC, bg=BG).pack(pady=(40, 6))
+        tk.Label(b, text="Yapilacak testleri isaretleyin; sadece isaretliler sirayla calisir.",
+                 font=("Segoe UI", 14), fg=MUT, bg=BG, justify="center").pack(pady=6)
+
+        # --- test secimi (tikler) ---
+        sel = tk.Frame(b, bg=BG); sel.pack(pady=6)
+        labels = {"screen": "Ekran (renk/dead-pixel)", "touch": "Dokunmatik cizim",
+                  "grid": "Dokunmatik izgara", "inv": "Donanim envanteri",
+                  "stress": "CPU/RAM stres", "ssd": "SSD hiz",
+                  "net": "Ag / internet", "reset": "Reset / elektrik gecmisi"}
+        keys = list(labels.keys())
+        for idx, k in enumerate(keys):
+            tk.Checkbutton(sel, text=labels[k], variable=self.enabled[k],
+                           font=("Segoe UI", 13), fg=FG, bg=BG, selectcolor=PANEL,
+                           activebackground=BG, activeforeground=FG, anchor="w", width=24
+                           ).grid(row=idx // 2, column=idx % 2, sticky="w", padx=10, pady=2)
+        bs = tk.Frame(b, bg=BG); bs.pack(pady=(2, 0))
+        tk.Button(bs, text="Tumunu sec", font=("Segoe UI", 11), bg=PANEL, fg=FG, relief="flat",
+                  command=lambda: [v.set(True) for v in self.enabled.values()]).pack(side="left", padx=4)
+        tk.Button(bs, text="Hicbiri", font=("Segoe UI", 11), bg=PANEL, fg=FG, relief="flat",
+                  command=lambda: [v.set(False) for v in self.enabled.values()]).pack(side="left", padx=4)
 
         # --- stres / burn-in suresi secimi ---
         tk.Label(b, text="CPU / RAM stres (burn-in) suresi:", font=("Segoe UI", 15, "bold"),
-                 fg=FG, bg=BG).pack(pady=(28, 8))
+                 fg=FG, bg=BG).pack(pady=(16, 6))
         row = tk.Frame(b, bg=BG); row.pack()
         for val, lab in [("1", "1 dk"), ("5", "5 dk"), ("30", "30 dk"), ("60", "1 saat"), ("120", "2 saat")]:
             tk.Button(row, text=lab, font=("Segoe UI", 13), bg=PANEL, fg=FG, relief="flat",
@@ -314,8 +352,8 @@ class Wizard:
         tk.Label(custom, text=" dakika", font=("Segoe UI", 13), fg=MUT, bg=BG).pack(side="left")
 
         tk.Button(b, text="TESTE BASLA  ▶", font=("Segoe UI", 20, "bold"),
-                  bg=GREEN, fg="#06210f", relief="flat", padx=40, pady=16,
-                  command=self._start).pack(pady=30)
+                  bg=GREEN, fg="#06210f", relief="flat", padx=40, pady=14,
+                  command=self._start).pack(pady=18)
         tk.Label(b, text="Uzun testlerde sicaklik 15 sn'de bir orneklenir ve CSV'ye loglanir.  (acil cikis: F10)",
                  font=("Segoe UI", 10), fg=MUT, bg=BG).pack(side="bottom", pady=14)
 
@@ -506,13 +544,36 @@ class Wizard:
         else:
             self.record("Envanter", "RAM", f"{ram} GB (< {EXPECTED['min_ram_gb']})", "FAIL"); status = "FAIL"
         for dk in disks:
+            nm = dk.get("name", "")
             h = dk.get("health", "")
             st = "PASS" if h == "Healthy" else "FAIL"
             if st == "FAIL":
                 status = "FAIL"
             ttxt = f", {dk.get('temp')}C" if dk.get("temp") else ""
-            lines.append(f"Disk    : {dk.get('name','')} {dk.get('gb')}GB {dk.get('media','')} [{h}{ttxt}]")
-            self.record("Disk", dk.get("name", ""), f"{dk.get('gb')}GB / {h}", st)
+            lines.append(f"Disk    : {nm} {dk.get('gb')}GB {dk.get('media','')} [{h}{ttxt}]")
+            self.record("Disk", nm, f"{dk.get('gb')}GB / {h}", st)
+            # --- saha riski: SMART karakteristikleri ---
+            if h and h != "Healthy":
+                self.add_risk(f"Disk '{nm}' saglik durumu '{h}' — sahada arizalanabilir, DEGISTIRIN.")
+            wear = dk.get("wear")
+            if isinstance(wear, (int, float)) and wear >= 10:
+                self.add_risk(f"SSD '{nm}' asinma %{wear:0.0f} — omru azaliyor, kritik cihaza takmayin.")
+            temp = dk.get("temp")
+            if isinstance(temp, (int, float)) and temp >= 60:
+                self.add_risk(f"Disk '{nm}' sicakligi {temp}C — yuksek; sahada isinma/arizaya yatkin.")
+            if dk.get("readErr"):
+                self.add_risk(f"Disk '{nm}' okuma hatasi sayaci {dk.get('readErr')} — veri kaybi riski.")
+            if dk.get("writeErr"):
+                self.add_risk(f"Disk '{nm}' yazma hatasi sayaci {dk.get('writeErr')} — veri kaybi riski.")
+            poh = dk.get("poh")
+            if isinstance(poh, (int, float)) and poh >= 100:
+                self.add_risk(f"Disk '{nm}' calisma saati {poh}h — SIFIR cihazda yuksek (kullanilmis disk olabilir).")
+        # sistem diski bos alan riski
+        free = d.get("sysfree_gb")
+        if isinstance(free, (int, float)) and free < 15:
+            self.add_risk(f"Sistem diski bos alani dusuk ({free} GB) — sahada guncelleme/log dolma sorunu.")
+        if (d.get("rambanks") or 0) == 1 and ram <= 4:
+            self.add_risk("Tek RAM cubugu + dusuk kapasite — dual-channel yok, performans dusuk olabilir.")
         self.record("Envanter", "GPU", d.get("gpu", ""), "INFO")
         self.finish_auto("inv", status, lines)
 
@@ -590,8 +651,11 @@ class Wizard:
             lines.append(f"CPU sicaklik: {tb if tb else '?'}C -> peak {peak:0.0f}C (limit {EXPECTED['max_cpu_temp']})")
             if peak > EXPECTED["max_cpu_temp"]:
                 self.record("Stres", "CPU peak sicaklik", f"{peak:0.0f}C", "FAIL"); status = "FAIL"
+                self.add_risk(f"CPU yuk altinda {peak:0.0f}C — limit asildi; sogutma yetersiz, sahada throttle/kapanma riski.")
             else:
                 self.record("Stres", "CPU peak sicaklik", f"{peak:0.0f}C", "PASS")
+                if peak >= EXPECTED["max_cpu_temp"] - 10:
+                    self.add_risk(f"CPU peak {peak:0.0f}C — limite yakin ({EXPECTED['max_cpu_temp']}C); sicak ortamda riskli, sogutmayi kontrol edin.")
         else:
             lines.append("CPU sicaklik: WMI'dan okunamadi (bazi anakartlarda normal).")
             self.record("Stres", "CPU sicaklik", "N/A", "INFO")
@@ -689,7 +753,21 @@ class Wizard:
         head = self.inv.get("computer", "") + "  |  S/N: " + self.inv.get("serial", "") if self.inv else ""
         tk.Label(b, text=head, font=("Segoe UI", 12), fg=MUT, bg=BG).pack(anchor="w", padx=40)
         tk.Label(b, text=f"SONUC: {verdict}   (FAIL={fails}  WARN={warns})",
-                 font=("Segoe UI", 20, "bold"), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=10)
+                 font=("Segoe UI", 20, "bold"), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=(10, 4))
+
+        # --- saha risk uyarilari ---
+        if self.risks:
+            rf = tk.Frame(b, bg="#2b2410", highlightbackground=YEL, highlightthickness=1)
+            rf.pack(fill="x", padx=40, pady=6)
+            tk.Label(rf, text="⚠ SAHA RISK UYARILARI (degistir/kontrol et)", font=("Segoe UI", 13, "bold"),
+                     fg=YEL, bg="#2b2410").pack(anchor="w", padx=12, pady=(8, 2))
+            for m in self.risks:
+                tk.Label(rf, text="• " + m, font=("Segoe UI", 11), fg="#f0d890", bg="#2b2410",
+                         wraplength=self.sw - 420, justify="left").pack(anchor="w", padx=18, pady=1)
+            tk.Label(rf, text="", bg="#2b2410").pack(pady=2)
+        else:
+            tk.Label(b, text="✓ Donanim karakteristiklerinde saha riski tespit edilmedi.",
+                     font=("Segoe UI", 12), fg=GREEN, bg=BG).pack(anchor="w", padx=40, pady=2)
 
         wrap = tk.Frame(b, bg=BG); wrap.pack(fill="both", expand=True, padx=40, pady=6)
         txt = tk.Text(wrap, bg=PANEL, fg=FG, font=("Consolas", 11), relief="flat", height=18)
@@ -727,6 +805,12 @@ class Wizard:
                           f"<th>Aciklama</th></tr>{reset_rows}</table>")
         else:
             reset_html = "<p class='mut'>Reset gecmisi alinamadi.</p>"
+        if self.risks:
+            risk_items = "".join(f"<li>{m}</li>" for m in self.risks)
+            risk_html = ("<div class='riskbox'><b>⚠ SAHA RISK UYARILARI (degistir/kontrol et)</b>"
+                         f"<ul>{risk_items}</ul></div>")
+        else:
+            risk_html = "<p style='color:#3fb950'>✓ Donanim karakteristiklerinde saha riski tespit edilmedi.</p>"
         vcls = "fail" if fails else ("warn" if warns else "pass")
         rows = "\n".join(
             f"<tr class='{s.lower()}'><td>{s}</td><td>{c}</td><td>{i}</td><td>{v}</td></tr>"
@@ -742,11 +826,14 @@ td,th{{border:1px solid #30363d;padding:6px 12px;text-align:left}}th{{background
 .v{{font-size:20px;font-weight:bold;padding:10px 16px;border-radius:8px;display:inline-block;margin:10px 0}}
 .logobox{{display:inline-block;background:#fff;padding:6px 12px;border-radius:6px;margin-bottom:8px}}
 .logobox img{{height:40px;display:block}}
+.riskbox{{background:#2b2410;border:1px solid #d29922;border-radius:8px;padding:10px 16px;margin:12px 0;color:#f0d890}}
+.riskbox b{{color:#d29922}}
 </style></head><body>
 {logo_tag}
 <h1>Dokunmatik PC - Tam Test Raporu</h1>
 <p class='mut'>{comp} &nbsp;|&nbsp; S/N: {inv.get('serial','')} &nbsp;|&nbsp; {inv.get('board','')} &nbsp;|&nbsp; {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
 <div class='v {vcls}'>SONUC: {verdict} &nbsp; (FAIL={fails} WARN={warns})</div>
+{risk_html}
 <table><tr><th>Durum</th><th>Kategori</th><th>Test</th><th>Deger</th></tr>
 {rows}</table>
 {reset_html}</body></html>"""
