@@ -31,10 +31,14 @@ tepkisi/ölü bölge kontrolü).
 Ekran 8×5 hücreye bölünür; operatör her hücreye dokunur. Hepsi yeşil olunca otomatik
 geçer → ekranın **her noktasının** dokunmatik algıladığı doğrulanır.
 
-**4. Donanım envanteri**
+**4. Donanım envanteri + sağlık (çipset / USB / sensör)**
 WMI/CIM ile otomatik toplar: anakart, BIOS, **seri no**, OS, CPU (model/çekirdek),
-**RAM** (miktar + kanal sayısı), **disk** (model/kapasite/medya/bus + SMART), GPU,
-çözünürlük. Beklenen değerlerle karşılaştırır (RAM/disk min vb.).
+**RAM** (miktar + kanal), **disk** (model/kapasite/medya/bus + SMART), GPU, çözünürlük.
+Ayrıca **sağlık taraması**:
+- **Çipset/sürücü sağlığı:** hata kodlu (sarı ünlem) aygıtlar taranır → sorunlu denetleyici/çipset/sürücü yakalanır
+- **USB sağlığı:** USB denetleyici sayısı + sorunlu USB aygıtı
+- **Voltaj:** CPU çekirdek voltajı (WMI verirse; anakart rayları özel sürücü ister → yoksa "okunamadı")
+- **Isı bölgeleri:** tüm termal sensörler
 
 **4b. BIOS / CMOS pili**
 BIOS sürüm/tarihi raporlanır. **CMOS/BIOS düğme pili (CR2032)** — anakart üzerindeki ayrı
@@ -63,10 +67,14 @@ Tüm çekirdeklere seçilen süre boyunca **tam yük** bindirir.
 **7. Ağ / internet**
 Ethernet/WiFi adaptörleri: link durumu, hız (Mbps), MAC + internet **ping** (8.8.8.8).
 
-**8. Reset / elektrik geçmişi (son 30 gün)**
+**8. Reset / elektrik + USB güç/arıza geçmişi (son 30 gün)**
 Windows olay günlüğünden kapanma/açılma olaylarını sınıflandırır:
 **TEMİZ kapanma / SOFT-reset / BEKLENMEDİK (elektrik kesintisi veya hard-reset) / AÇILIŞ**.
 Beklenmedik kapanma + zayıf disk birlikteyse **SSD elektrik hasarı** uyarısı verir.
+Ayrıca **USB güç olayları**: güç dalgalanması / aşırı akım (kısa devre benzeri) ve
+USB aygıt arızası / tanınmama olayları sayılır ve raporlanır (bozuk USB cihaz/port tespiti).
+
+**+ Performans:** stres adımında tek-çekirdek **performans indeksi** (op/s) ölçülüp raporlanır.
 
 **9. Özet + rapor**
 Genel değerlendirme banner'ı, her donanım için not kartı, risk paneli, sonuç tablosu;
@@ -87,6 +95,8 @@ Notlar **donanımın kendi karakteristiğine göre** (eski/yavaş donanım adil 
 | **Disk/SSD** | Hız **medya tipine göre** (HDD ~60/90, SATA SSD ~250/350, NVMe ~700/1500 MB/s) + SMART sağlık + **veri bütünlüğü** + dosya sistemi durumu. |
 | **Soğutma** | Yük altında peak sıcaklık + throttle (yüksek sıcaklık + saat düşüşü = yetersiz). |
 | **Adaptör** | Yük altında güç sınırı/throttle veya (pilli ise) pil boşalması. |
+| **Çipset** | Hata kodlu aygıt (sürücü/donanım sorunu) sayısı. |
+| **USB** | USB denetleyici + sorunlu USB aygıtı. |
 | **Ekran / Dokunmatik** | Operatör onayı. |
 | **Ağ** | Link + internet erişimi. |
 | **Güvenilirlik** | Son 30 gün beklenmedik reset sayısı. |
@@ -105,6 +115,8 @@ Geçse bile, **ileride sahada sorun çıkarabilecek** donanımı önceden bildir
 - **Soğutma yetersiz/sınırda** (peak sıcaklık limite yakın/aştı + throttle)
 - **Adaptör/güç sınırı** (yükte throttle ama sıcaklık düşük)
 - **CMOS/BIOS pili bitmiş** (saat sıfırlanmış → tarih/lisans sorunu)
+- **Çipset/sürücü aygıt hatası** (sarı ünlemli aygıt)
+- **USB güç dalgalanması / aşırı akım** (kısa devre benzeri) veya USB aygıt arızası geçmişi
 - Sistem diski boş alan < 15 GB, tek-kanal RAM
 
 ---

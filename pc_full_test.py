@@ -137,6 +137,50 @@ $b=Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue|Select-Object -Fi
 def get_loadstat():
     return ps_json(PS_LOADSTAT, timeout=20) or {}
 
+
+# cipset/surucu + USB + voltaj + isi bolgeleri saglik taramasi
+PS_HEALTH = r"""
+$prob=@(Get-CimInstance Win32_PnPEntity -Filter "ConfigManagerErrorCode<>0 AND ConfigManagerErrorCode IS NOT NULL" -ErrorAction SilentlyContinue|
+  ForEach-Object{[pscustomobject]@{name="$($_.Name)";code=[int]$_.ConfigManagerErrorCode}})
+$usbc=@(Get-CimInstance Win32_USBController -ErrorAction SilentlyContinue).Count
+$usbprob=@($prob|Where-Object{$_.name -match 'USB|Universal Serial'}).Count
+$cv=(Get-CimInstance Win32_Processor|Select-Object -First 1).CurrentVoltage
+$volt=$(if($cv -and ($cv -band 0x80)){[math]::Round(($cv -band 0x7f)/10,1)}else{$null})
+$tz=@(Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue|
+  ForEach-Object{[math]::Round(($_.CurrentTemperature/10)-273.15,1)})
+[pscustomobject]@{problems=$prob;usb_ctrl=$usbc;usb_prob=$usbprob;volt=$volt;zones=$tz}|ConvertTo-Json -Depth 4 -Compress
+"""
+
+
+def cpu_bench(seconds=1.5):
+    """Tek cekirdek performans indeksi (op/s) — yuk yokken olculur."""
+    end = time.time() + seconds
+    n = 0
+    x = 0.0001
+    while time.time() < end:
+        for _ in range(2000):
+            x = math.sqrt(abs(x) * 3.14159) + math.sin(x)
+            x += 0.0001
+        n += 2000
+    return int(n / seconds)
+
+PS_USBEVENTS = r"""
+$since=(Get-Date).AddDays(-30)
+$prov='Microsoft-Windows-Kernel-PnP','Microsoft-Windows-Kernel-PnPMgr','usbhub','UsbHub3','USBHUB3','Microsoft-Windows-USB-USBHUB3'
+$ev=@()
+foreach($p in $prov){ try{$ev+=Get-WinEvent -FilterHashtable @{LogName='System';ProviderName=$p;StartTime=$since} -ErrorAction Stop}catch{} }
+$surge=@(); $fault=@()
+foreach($e in $ev){
+  $m="$($e.Message)"
+  if($m -match 'power surge|exceeded the power limit|over-?current|surge on'){
+    $surge+=[pscustomobject]@{time=$e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss');msg=(($m -split "`r?`n")|Where-Object{$_}|Select-Object -First 1)}
+  } elseif($m -match 'malfunction|not recognized|failed to start|cannot start|descriptor request failed|surprise|unexpectedly removed'){
+    $fault+=[pscustomobject]@{time=$e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss');msg=(($m -split "`r?`n")|Where-Object{$_}|Select-Object -First 1)}
+  }
+}
+[pscustomobject]@{surge=$surge;fault=$fault}|ConvertTo-Json -Depth 4 -Compress
+"""
+
 PS_RESET_HIST = r"""
 $since=(Get-Date).AddDays(-30)
 $ev=@()
@@ -291,6 +335,8 @@ class Wizard:
         self.sn_var = tk.StringVar(value="")     # seri no / is emri
         self.grades = {}                         # donanim -> 0..3 (karakteristige gore)
         self.sys_bus = ""; self.sys_media = ""   # sistem diski bus/media (hiz derecesi icin)
+        self.health = {}                         # cipset/usb/voltaj/isi saglik verisi
+        self.usb_events = {}                     # usb guc/ariza olaylari (reset raporu)
 
         # ttk profesyonel stil
         try:
@@ -652,17 +698,25 @@ class Wizard:
         tk.Button(self.root, text="ATLA / HATALI", font=("Segoe UI", 14), bg=RED, fg="#2a0a0a",
                   relief="flat", padx=14, pady=8, command=lambda: done("FAIL")).place(x=20, y=20)
 
-    # ===================== 4) ENVANTER =====================
+    # ===================== 4) ENVANTER + SAGLIK =====================
     def step_inventory(self):
-        self.auto_panel("inv", "4. Donanim Envanteri")
-        self.run_async(lambda: ps_json(PS_INVENTORY), self._after_inv)
+        self.auto_panel("inv", "4. Donanim Envanteri + Saglik (cipset/USB/sensor)")
 
-    def _after_inv(self, d):
+        def work():
+            inv = ps_json(PS_INVENTORY)
+            health = ps_json(PS_HEALTH, timeout=60)
+            return inv, health
+
+        self.run_async(work, self._after_inv)
+
+    def _after_inv(self, res):
+        d, health = res if isinstance(res, tuple) and len(res) == 2 else (res, None)
         if not isinstance(d, dict):
             self.record("Envanter", "WMI", "okunamadi", "WARN")
             self.finish_auto("inv", "WARN", ["Donanim bilgisi okunamadi (Yonetici?)."])
             return
         self.inv = d
+        self.health = health or {}
         disks = d.get("disks") or []
         if isinstance(disks, dict):
             disks = [disks]
@@ -755,6 +809,55 @@ class Wizard:
         else:
             self.set_grade("RAM", 2)
         self.record("Envanter", "GPU", d.get("gpu", ""), "INFO")
+
+        # --- CIPSET / USB / VOLTAJ / ISI saglik ---
+        h = self.health
+        probs = h.get("problems") or []
+        if isinstance(probs, dict):
+            probs = [probs]
+        npb = len(probs)
+        if npb == 0:
+            self.set_grade("Cipset", 3)
+            self.record("Cipset", "Cihaz/surucu", "tum cihazlar saglikli", "PASS")
+            lines.append("Cipset/surucu: tum cihazlar saglikli (hatali aygit yok)")
+        else:
+            self.set_grade("Cipset", 1 if npb < 3 else 0)
+            self.record("Cipset", "Sorunlu cihaz", f"{npb} adet", "WARN")
+            lines.append(f"Cipset/surucu: {npb} SORUNLU aygit:")
+            for p in probs[:5]:
+                lines.append(f"   - {p.get('name','')} (hata kodu {p.get('code')})")
+                self.add_risk(f"Sorunlu aygit (surucu/donanim): {p.get('name','')} (kod {p.get('code')}) — cipset/surucu sorunu.")
+            if status == "PASS":
+                status = "WARN"
+        usbc = h.get("usb_ctrl") or 0
+        usbp = h.get("usb_prob") or 0
+        if usbc > 0 and usbp == 0:
+            self.set_grade("USB", 3)
+        elif usbp > 0:
+            self.set_grade("USB", 1)
+            self.add_risk(f"{usbp} USB aygitinda sorun (surucu/baglanti) var.")
+            if status == "PASS":
+                status = "WARN"
+        else:
+            self.set_grade("USB", 2)
+        self.record("USB", "Denetleyici/sorun", f"{usbc} denetleyici / {usbp} sorun", "PASS" if usbp == 0 else "WARN")
+        lines.append(f"USB: {usbc} denetleyici, {usbp} sorunlu aygit")
+        volt = h.get("volt")
+        if volt:
+            lines.append(f"CPU voltaj: {volt} V")
+            self.record("Sensor", "CPU voltaj", f"{volt} V", "INFO")
+            if volt < 0.6 or volt > 1.6:
+                self.add_risk(f"CPU voltaji {volt}V — beklenen aralik (0.6-1.6V) disinda.")
+        else:
+            lines.append("CPU voltaj: standart WMI'dan okunamadi (anakart raylari icin ozel surucu gerekir)")
+        zones = h.get("zones") or []
+        if isinstance(zones, (int, float)):
+            zones = [zones]
+        if zones:
+            zt = ", ".join(f"{z}C" for z in zones)
+            lines.append(f"Isi bolgeleri: {zt}")
+            self.record("Sensor", "Isi bolgeleri", zt, "INFO")
+
         self.finish_auto("inv", status, lines)
 
     # ===================== 5) STRES =====================
@@ -769,10 +872,6 @@ class Wizard:
         batt_present = bool(st0.get("batt_present"))
         batt_idle = st0.get("batt")          # yuk oncesi pil durumu
 
-        procs = [mp.Process(target=_cpu_worker, args=(dur,)) for _ in range(ncpu)]
-        for p in procs:
-            p.start()
-
         # uzun test (>=5 dk) ise CSV log
         csv_path = None
         if dur >= 300:
@@ -781,6 +880,14 @@ class Wizard:
         self.stress_csv = csv_path
 
         def waiter():
+            # 1) yuk YOKKEN tek-cekirdek performans indeksi
+            self.root.after(0, lambda: self.status.config(text="Performans olcumu (tek cekirdek)..."))
+            perf = cpu_bench(1.5)
+            # 2) tum cekirdeklere yuku bindir
+            procs = [mp.Process(target=_cpu_worker, args=(dur,)) for _ in range(ncpu)]
+            for p in procs:
+                p.start()
+            self.root.after(0, lambda: self.status.config(text=f"{ncpu} cekirdek yukleniyor..."))
             t0 = time.time()
             peak = temp_before or 0.0
             minclock = st0.get("clock") or 0
@@ -831,7 +938,7 @@ class Wizard:
                 peak = temp_after
             self.stress_peak = peak if peak else None
             extra = {"minclock": minclock, "maxclock": maxclock, "batt_present": batt_present,
-                     "batt_idle": batt_idle, "batt_load": batt_load}
+                     "batt_idle": batt_idle, "batt_load": batt_load, "perf": perf}
             self.root.after(0, lambda: self._after_stress(temp_before, temp_after, peak, ram_ok, extra))
 
         threading.Thread(target=waiter, daemon=True).start()
@@ -842,6 +949,10 @@ class Wizard:
         mm, ss = divmod(self.stress_sec, 60)
         lines.append(f"CPU yuku tamamlandi ({os.cpu_count()} cekirdek, {mm} dk {ss} sn).")
         self.record("Stres", "CPU yuk suresi", f"{mm}dk {ss}sn", "PASS")
+        perf = extra.get("perf")
+        if perf:
+            lines.append(f"Performans (tek cekirdek): {perf:,} op/s")
+            self.record("Performans", "Tek cekirdek", f"{perf:,} op/s", "INFO")
         if ram_ok:
             lines.append(f"RAM dogrulama: OK ({EXPECTED['ram_test_mb']} MB)")
             self.record("Stres", "RAM dogrulama", f"{EXPECTED['ram_test_mb']}MB OK", "PASS")
@@ -1062,15 +1173,31 @@ class Wizard:
 
     # ===================== 8) RESET / ELEKTRIK GECMISI =====================
     def step_reset(self):
-        self.auto_panel("reset", "8. Reset / Elektrik Gecmisi (son 30 gun)")
-        self.run_async(lambda: ps_json(PS_RESET_HIST), self._after_reset)
+        self.auto_panel("reset", "8. Reset / Elektrik + USB Guc/Ariza Gecmisi (son 30 gun)")
 
-    def _after_reset(self, data):
+        def work():
+            hist = ps_json(PS_RESET_HIST)
+            usb = ps_json(PS_USBEVENTS, timeout=90)
+            return hist, usb
+
+        self.run_async(work, self._after_reset)
+
+    def _after_reset(self, res):
+        data, usb = res if isinstance(res, tuple) and len(res) == 2 else (res, None)
         if isinstance(data, dict):
             data = [data]
         if not isinstance(data, list):
             data = []
         self.reset_events = data
+        # --- USB guc dalgalanmasi / ariza olaylari ---
+        usb = usb or {}
+        surge = usb.get("surge") or []
+        fault = usb.get("fault") or []
+        if isinstance(surge, dict):
+            surge = [surge]
+        if isinstance(fault, dict):
+            fault = [fault]
+        self.usb_events = {"surge": surge, "fault": fault}
         c = lambda t: sum(1 for e in data if e.get("type") == t)
         boot, clean, soft, unexp = c("ACILIS"), c("TEMIZ"), c("SOFT"), c("BEKLENMEDIK")
         self.record("Reset", "Beklenmedik (30g)", unexp, "WARN" if unexp else "PASS")
@@ -1078,8 +1205,21 @@ class Wizard:
         self.record("Reset", "Temiz kapanma (30g)", clean, "INFO")
         lines = [f"Acilis: {boot}    Temiz: {clean}    Soft-reset: {soft}    BEKLENMEDIK: {unexp}",
                  "(BEKLENMEDIK = elektrik kesintisi veya manuel/hard-reset)", ""]
-        for e in data[-10:]:
-            lines.append(f"{e.get('time','')}  [{e.get('type',''):<11}] {e.get('detail','')[:55]}")
+        for e in data[-8:]:
+            lines.append(f"{e.get('time','')}  [{e.get('type',''):<11}] {e.get('detail','')[:50]}")
+        # --- USB guc/ariza olaylari ---
+        ns, nf = len(surge), len(fault)
+        lines.append("")
+        lines.append(f"USB guc dalgalanmasi/asiri akim: {ns}   |   USB ariza/taninmayan: {nf}")
+        self.record("USB olay", "Guc dalgalanmasi (30g)", ns, "WARN" if ns else "PASS")
+        self.record("USB olay", "Ariza/taninmayan (30g)", nf, "WARN" if nf else "PASS")
+        if ns:
+            self.add_risk(f"{ns} kez USB guc dalgalanmasi/asiri akim (kisa devre benzeri) — bozuk USB cihaz/port; "
+                          "elektronik hasar riski, sorunlu cihazi/portu tespit edin.")
+        if nf:
+            self.add_risk(f"{nf} kez USB aygit arizasi/taninmama — bozuk USB cihaz takilmis olabilir.")
+        for s in surge[-3:]:
+            lines.append(f"  ⚡ {s.get('time','')}  {s.get('msg','')[:55]}")
         # --- guvenilirlik derecesi: beklenmedik reset sayisina gore ---
         if unexp >= 3:
             self.set_grade("Reset", 0)
@@ -1132,7 +1272,8 @@ class Wizard:
         # --- her donanim icin ayri not karti ---
         order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"),
                  ("Sogutma", "Sogutma"), ("Adaptor", "Adaptor"), ("RAM", "RAM"),
-                 ("Disk", "Disk/SSD"), ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
+                 ("Disk", "Disk/SSD"), ("Cipset", "Cipset"), ("USB", "USB"),
+                 ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
         cards = tk.Frame(b, bg=BG); cards.pack(anchor="w", padx=36, pady=4)
         col = 0
         for key, disp in order:
@@ -1196,6 +1337,20 @@ class Wizard:
                           f"<th>Aciklama</th></tr>{reset_rows}</table>")
         else:
             reset_html = "<p class='mut'>Reset gecmisi alinamadi.</p>"
+        # USB guc/ariza olaylari (reset raporuna ekli)
+        surge = (self.usb_events or {}).get("surge") or []
+        fault = (self.usb_events or {}).get("fault") or []
+        if surge or fault:
+            urows = "".join(
+                f"<tr class='{c}'><td>{e.get('time','')}</td><td>{t}</td><td>{e.get('msg','')}</td></tr>"
+                for t, c, lst in (("USB GUC/ASIRI AKIM", "fail", surge), ("USB ARIZA", "warn", fault))
+                for e in lst)
+            reset_html += ("<h2>USB Guc / Ariza Olaylari (son 30 gun)</h2>"
+                           f"<p class='mut'>Guc dalgalanmasi/asiri akim: <b>{len(surge)}</b> &nbsp; "
+                           f"Ariza/taninmayan: <b>{len(fault)}</b></p>"
+                           f"<table><tr><th>Zaman</th><th>Tip</th><th>Olay</th></tr>{urows}</table>")
+        else:
+            reset_html += "<p class='mut'>USB guc/ariza olayi yok.</p>"
         if self.risks:
             risk_items = "".join(f"<li>{m}</li>" for m in self.risks)
             risk_html = ("<div class='riskbox'><b>⚠ SAHA RISK UYARILARI (degistir/kontrol et)</b>"
@@ -1210,7 +1365,8 @@ class Wizard:
         og = self.overall_grade()
         grade_order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"),
                        ("Sogutma", "Sogutma"), ("Adaptor", "Adaptor"), ("RAM", "RAM"),
-                       ("Disk", "Disk/SSD"), ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
+                       ("Disk", "Disk/SSD"), ("Cipset", "Cipset"), ("USB", "USB"),
+                       ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
         chips = "".join(
             f"<span class='chip' style='border-color:{GRADE_COLORS[self.grades[k]]};color:{GRADE_COLORS[self.grades[k]]}'>"
             f"{disp}: {GRADE_LABELS[self.grades[k]]}</span>"
