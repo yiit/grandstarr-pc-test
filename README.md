@@ -77,21 +77,21 @@ USB aygıt arızası / tanınmama olayları sayılır ve raporlanır (bozuk USB 
 **+ Performans:** stres adımında tek-çekirdek **performans indeksi** (op/s) ölçülüp raporlanır.
 
 **9. Özet + rapor**
-Genel değerlendirme banner'ı, her donanım için not kartı, risk paneli, sonuç tablosu;
-logolu **HTML rapor** exe klasörüne yazılır.
+Her donanım için **kendi karakteristik not kartı** (genel/toplu not yok), risk paneli,
+sonuç tablosu; logolu **HTML rapor** exe klasörüne yazılır.
 
 ---
 
 ## 🏅 Derecelendirme — her donanım için ayrı
 
 Her bileşen 4 seviye not alır: **ÇOK KÖTÜ / KÖTÜ / İYİ / SÜPER**.
-Genel not = en zayıf bileşen (zincir en zayıf halkası kadar sağlam).
+**Genel/toplu not YOKTUR** — her donanım yalnızca kendi karakteristiğine göre değerlendirilir.
 
 Notlar **donanımın kendi karakteristiğine göre** (eski/yavaş donanım adil değerlendirilir):
 | Donanım | Neye göre |
 |---|---|
 | **CPU** | Ham hız değil → yük altında **sıcaklık marjı / throttle yok mu**. Sıcaklık okunamazsa cezalandırmaz. |
-| **RAM** | Sağlık (yaz/oku doğrulama) + dual-channel; düşük GB diye değil. |
+| **RAM** | Yalnızca sağlık (yaz/oku doğrulama). Kapasite/kanal sayısına göre **değil** (tek çubuk kusur sayılmaz). |
 | **Disk/SSD** | Hız **medya tipine göre** (HDD ~60/90, SATA SSD ~250/350, NVMe ~700/1500 MB/s) + SMART sağlık + **veri bütünlüğü** + dosya sistemi durumu. |
 | **Soğutma** | Yük altında peak sıcaklık + throttle (yüksek sıcaklık + saat düşüşü = yetersiz). |
 | **Adaptör** | Yük altında güç sınırı/throttle veya (pilli ise) pil boşalması. |
@@ -117,7 +117,7 @@ Geçse bile, **ileride sahada sorun çıkarabilecek** donanımı önceden bildir
 - **CMOS/BIOS pili bitmiş** (saat sıfırlanmış → tarih/lisans sorunu)
 - **Çipset/sürücü aygıt hatası** (sarı ünlemli aygıt)
 - **USB güç dalgalanması / aşırı akım** (kısa devre benzeri) veya USB aygıt arızası geçmişi
-- Sistem diski boş alan < 15 GB, tek-kanal RAM
+- Sistem diski boş alan < 15 GB
 
 ---
 

@@ -798,16 +798,9 @@ class Wizard:
         free = d.get("sysfree_gb")
         if isinstance(free, (int, float)) and free < 15:
             self.add_risk(f"Sistem diski bos alani dusuk ({free} GB) — sahada guncelleme/log dolma sorunu.")
-        if (d.get("rambanks") or 0) == 1 and ram <= 4:
-            self.add_risk("Tek RAM cubugu + dusuk kapasite — dual-channel yok, performans dusuk olabilir.")
-        # --- dereceler: Disk (saglik) + RAM (saglik/kanal) ---
+        # --- derece: Disk (saglik). RAM derecesi stres adiminda (yaz/oku sagligi) verilir.
+        #     Tek/cift kanal veya kapasiteye gore RAM DERECELENDIRMESI YAPILMAZ (karakteristik).
         self.set_grade("Disk", dh)
-        if ram < EXPECTED["min_ram_gb"]:
-            self.set_grade("RAM", 1)
-        elif (d.get("rambanks") or 0) >= 2:
-            self.set_grade("RAM", 3)
-        else:
-            self.set_grade("RAM", 2)
         self.record("Envanter", "GPU", d.get("gpu", ""), "INFO")
 
         # --- CIPSET / USB / VOLTAJ / ISI saglik ---
@@ -988,7 +981,7 @@ class Wizard:
         else:
             cpu_g = 2                          # sicaklik okunamadi -> cezalandirma, notr
         self.set_grade("CPU", cpu_g)
-        self.set_grade("RAM", 0 if not ram_ok else self.grades.get("RAM", 2))
+        self.set_grade("RAM", 0 if not ram_ok else 3)   # sadece saglik (yaz/oku); kapasite/kanal degil
 
         # --- throttle tespiti (saat yuk altinda dustu mu) ---
         minc = extra.get("minclock") or 0
@@ -1256,18 +1249,11 @@ class Wizard:
         tk.Label(b, text="TEST OZETI", font=("Segoe UI", 20, "bold"), fg=FG, bg=BG).pack(anchor="w", padx=40, pady=(14, 0))
         tk.Label(b, text=head, font=("Segoe UI", 11), fg=MUT, bg=BG).pack(anchor="w", padx=40)
 
-        # --- GENEL DEGERLENDIRME banner (en dusuk bilesen notu) ---
-        og = self.overall_grade()
-        if og is not None:
-            gl, gc = GRADE_LABELS[og], GRADE_COLORS[og]
-            ban = tk.Frame(b, bg=gc); ban.pack(fill="x", padx=40, pady=(10, 4))
-            tk.Label(ban, text=f"GENEL DEGERLENDIRME:  {gl}", font=("Segoe UI", 22, "bold"),
-                     fg="#0d1117", bg=gc).pack(side="left", padx=18, pady=10)
-            tk.Label(ban, text=f"({verdict}  FAIL={fails} WARN={warns})",
-                     font=("Segoe UI", 12, "bold"), fg="#0d1117", bg=gc).pack(side="right", padx=18)
-        else:
-            tk.Label(b, text=f"SONUC: {verdict}   (FAIL={fails}  WARN={warns})",
-                     font=("Segoe UI", 18, "bold"), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=8)
+        # Genel/toplu not YOK — sadece test sonucu (sayisal) + her donanimin kendi notu.
+        tk.Label(b, text=f"Test sonucu: {verdict}   (FAIL={fails}  WARN={warns})",
+                 font=("Segoe UI", 15), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=8)
+        tk.Label(b, text="Her donanim KENDI karakteristigine gore degerlendirilir:",
+                 font=("Segoe UI", 12), fg=MUT, bg=BG).pack(anchor="w", padx=40)
 
         # --- her donanim icin ayri not karti ---
         order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"),
@@ -1361,8 +1347,7 @@ class Wizard:
         rows = "\n".join(
             f"<tr class='{s.lower()}'><td>{s}</td><td>{c}</td><td>{i}</td><td>{v}</td></tr>"
             for c, i, v, s in self.rows)
-        # genel not + her donanim icin not rozetleri
-        og = self.overall_grade()
+        # Genel/toplu not YOK — sadece her donanim icin KENDI karakteristik notu (rozet)
         grade_order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"),
                        ("Sogutma", "Sogutma"), ("Adaptor", "Adaptor"), ("RAM", "RAM"),
                        ("Disk", "Disk/SSD"), ("Cipset", "Cipset"), ("USB", "USB"),
@@ -1371,11 +1356,8 @@ class Wizard:
             f"<span class='chip' style='border-color:{GRADE_COLORS[self.grades[k]]};color:{GRADE_COLORS[self.grades[k]]}'>"
             f"{disp}: {GRADE_LABELS[self.grades[k]]}</span>"
             for k, disp in grade_order if k in self.grades)
-        if og is not None:
-            grade_html = (f"<div class='grade' style='background:{GRADE_COLORS[og]}'>"
-                          f"GENEL DEGERLENDIRME: {GRADE_LABELS[og]}</div><div>{chips}</div>")
-        else:
-            grade_html = ""
+        grade_html = (f"<h2 style='font-size:15px'>Donanim notlari (her biri kendi karakteristigine gore)</h2>"
+                      f"<div>{chips}</div>") if chips else ""
         op = self.op_var.get(); sn = self.sn_var.get()
         inv = self.inv or {}
         _uri = logo_data_uri()
