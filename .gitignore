@@ -19,3 +19,8 @@ ENDUARGE*_*.txt
 _tmp_*
 _out.txt
 _err.txt
+
+# yedek arsivler (repoya girmesin)
+*.rar
+*.zip
+*.7z
