@@ -467,8 +467,9 @@ class Wizard:
         hdr = tk.Frame(right, bg=PANEL, height=58)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
         if self.logo:
-            tk.Label(hdr, image=self.logo, bg="white", padx=8, pady=4).pack(side="left", padx=12, pady=8)
-        tk.Label(hdr, text="PC TEST ISTASYONU", font=("Segoe UI", 15, "bold"),
+            # logo.png artik yuvarlak beyaz zeminli + seffaf koseli -> Label bg=PANEL ile karisir
+            tk.Label(hdr, image=self.logo, bg=PANEL).pack(side="left", padx=12, pady=6)
+        tk.Label(hdr, text="PC TEST İSTASYONU", font=("Segoe UI", 15, "bold"),
                  fg=FG, bg=PANEL).pack(side="left", padx=14)
         self.clock_lbl = tk.Label(hdr, text="", font=("Segoe UI", 12), fg=MUT, bg=PANEL)
         self.clock_lbl.pack(side="right", padx=16)
@@ -1478,15 +1479,14 @@ class Wizard:
         op = self.op_var.get(); sn = self.sn_var.get()
         inv = self.inv or {}
         _uri = logo_data_uri()
-        logo_tag = f"<div class='logobox'><img src='{_uri}'></div>" if _uri else ""
+        logo_tag = f"<img class='logo' src='{_uri}'>" if _uri else ""
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>Test {comp}</title>
 <style>body{{background:#0d1117;color:#c9d1d9;font-family:Segoe UI,Arial;margin:24px}}
 h1{{font-size:22px}}.mut{{color:#8b949e}}table{{border-collapse:collapse;width:100%;margin-top:12px}}
 td,th{{border:1px solid #30363d;padding:6px 12px;text-align:left}}th{{background:#161b22}}
 .pass{{background:#0f2d1a}}.fail{{background:#3d1414}}.warn{{background:#3d3414}}.info{{}}
 .v{{font-size:20px;font-weight:bold;padding:10px 16px;border-radius:8px;display:inline-block;margin:10px 0}}
-.logobox{{display:inline-block;background:#fff;padding:6px 12px;border-radius:6px;margin-bottom:8px}}
-.logobox img{{height:40px;display:block}}
+.logo{{height:48px;margin-bottom:8px;display:block}}
 .riskbox{{background:#2b2410;border:1px solid #d29922;border-radius:8px;padding:10px 16px;margin:12px 0;color:#f0d890}}
 .riskbox b{{color:#d29922}}
 .grade{{font-size:22px;font-weight:bold;color:#0d1117;padding:12px 18px;border-radius:8px;display:inline-block;margin:10px 0}}
