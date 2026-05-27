@@ -19,6 +19,7 @@ Test (GUI'siz):  python pc_full_test.py --selftest
 """
 
 import os, sys, time, json, math, threading, tempfile, subprocess, base64
+from datetime import datetime as _dt
 import multiprocessing as mp
 import tkinter as tk
 from tkinter import ttk
@@ -165,7 +166,7 @@ def cpu_bench(seconds=1.5):
     return int(n / seconds)
 
 PS_USBEVENTS = r"""
-$since=(Get-Date).AddDays(-30)
+$since=(Get-Date).AddDays(-90)
 $prov='Microsoft-Windows-Kernel-PnP','Microsoft-Windows-Kernel-PnPMgr','usbhub','UsbHub3','USBHUB3','Microsoft-Windows-USB-USBHUB3'
 $ev=@()
 foreach($p in $prov){ try{$ev+=Get-WinEvent -FilterHashtable @{LogName='System';ProviderName=$p;StartTime=$since} -ErrorAction Stop}catch{} }
@@ -182,7 +183,7 @@ foreach($e in $ev){
 """
 
 PS_RESET_HIST = r"""
-$since=(Get-Date).AddDays(-30)
+$since=(Get-Date).AddDays(-90)
 $ev=@()
 try{$ev=Get-WinEvent -FilterHashtable @{LogName='System';Id=6005,6006,6008,1074,1076,41;StartTime=$since} -ErrorAction Stop|Sort-Object TimeCreated}catch{}
 $out=foreach($e in $ev){
@@ -265,6 +266,25 @@ def ssd_speed(size_mb):
             pass
 
 
+def count_unexpected(events, window_sec=120):
+    """Beklenmedik kapanmalari TEKLESTIR: ayni kirli kapanma hem Kernel-Power 41
+    hem 6008 uretir (saniyeler arayla) -> tek olay say."""
+    times = []
+    for e in events:
+        if e.get("type") == "BEKLENMEDIK":
+            try:
+                times.append(_dt.strptime(e.get("time", ""), "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                pass
+    times.sort()
+    n, last = 0, None
+    for t in times:
+        if last is None or (t - last).total_seconds() > window_sec:
+            n += 1
+        last = t
+    return n
+
+
 def base_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -320,8 +340,17 @@ class Wizard:
         self.root = root
         root.title("Dokunmatik PC - Tum Testler")
         root.configure(bg=BG)
-        root.attributes("-fullscreen", True)
+        # PENCERE MODU (tam ekran degil) - baslik cubugu + X tusu var, 1024x768'e sigar
+        root.geometry("1000x720")
+        root.minsize(820, 600)
+        try:
+            root.state("normal")
+        except Exception:
+            pass
+        self._fs = False
+        root.bind("<F11>", self._toggle_fs)          # F11: tam ekran ac/kapat (dead-pixel icin)
         root.bind("<F10>", lambda e: self._quit())   # acil cikis
+        root.bind("<Configure>", self._on_resize)
 
         self.rows = []          # rapor satirlari: (kategori,test,deger,durum)
         self.inv = None
@@ -337,6 +366,7 @@ class Wizard:
         self.sys_bus = ""; self.sys_media = ""   # sistem diski bus/media (hiz derecesi icin)
         self.health = {}                         # cipset/usb/voltaj/isi saglik verisi
         self.usb_events = {}                     # usb guc/ariza olaylari (reset raporu)
+        self.reset_unexp = 0                     # teklestirilmis beklenmedik kapanma sayisi
 
         # ttk profesyonel stil
         try:
@@ -360,8 +390,7 @@ class Wizard:
         self.enabled = {k: tk.BooleanVar(value=True)
                         for k in ("screen", "touch", "grid", "inv", "stress", "ssd", "net", "reset")}
         self.step_state = {}    # key -> 'PASS'/'FAIL'/'WARN'/'...'
-        self.sw = root.winfo_screenwidth()
-        self.sh = root.winfo_screenheight()
+        self.sw, self.sh = 1000, 720             # pencere ic olculeri (Configure ile guncellenir)
 
         # Endutek logosu (exe yaninda ya da gomulu logo.png) - sadece kenar cubugunda
         self.logo = None
@@ -808,20 +837,36 @@ class Wizard:
         probs = h.get("problems") or []
         if isinstance(probs, dict):
             probs = [probs]
-        npb = len(probs)
-        if npb == 0:
-            self.set_grade("Cipset", 3)
-            self.record("Cipset", "Cihaz/surucu", "tum cihazlar saglikli", "PASS")
-            lines.append("Cipset/surucu: tum cihazlar saglikli (hatali aygit yok)")
-        else:
-            self.set_grade("Cipset", 1 if npb < 3 else 0)
-            self.record("Cipset", "Sorunlu cihaz", f"{npb} adet", "WARN")
-            lines.append(f"Cipset/surucu: {npb} SORUNLU aygit:")
-            for p in probs[:5]:
-                lines.append(f"   - {p.get('name','')} (hata kodu {p.get('code')})")
-                self.add_risk(f"Sorunlu aygit (surucu/donanim): {p.get('name','')} (kod {p.get('code')}) — cipset/surucu sorunu.")
+        # PS/2 hayalet aygitlar ve "aygit yok" (kod 24) ZARARSIZ -> sayma.
+        # Kod 28 = surucu yuklu degil -> minor. Digerleri (10/43/1..) = gercek ariza.
+        serious, minor = [], []
+        for p in probs:
+            nm = str(p.get("name", "")); code = p.get("code")
+            if "PS/2" in nm or code == 24:
+                continue
+            if code == 28:
+                minor.append((nm, code))
+            else:
+                serious.append((nm, code))
+        if serious:
+            self.set_grade("Cipset", 0 if len(serious) >= 2 else 1)
+            self.record("Cipset", "Arizali aygit", f"{len(serious)} adet", "WARN")
+            lines.append(f"Cipset: {len(serious)} arizali aygit:")
+            for nm, code in serious[:5]:
+                lines.append(f"   - {nm} (kod {code})")
+                self.add_risk(f"Arizali aygit: {nm} (kod {code}) — cipset/donanim sorunu, kontrol edin.")
             if status == "PASS":
                 status = "WARN"
+        elif minor:
+            self.set_grade("Cipset", 2)
+            self.record("Cipset", "Surucu eksik", f"{len(minor)} aygit", "INFO")
+            lines.append(f"Cipset: aygitlar saglikli; {len(minor)} aygitin surucusu eksik (minor):")
+            for nm, code in minor[:5]:
+                lines.append(f"   - {nm}: surucu yuklenmemis (kod {code})")
+        else:
+            self.set_grade("Cipset", 3)
+            self.record("Cipset", "Cihaz/surucu", "tum cihazlar saglikli", "PASS")
+            lines.append("Cipset/surucu: tum cihazlar saglikli")
         usbc = h.get("usb_ctrl") or 0
         usbp = h.get("usb_prob") or 0
         if usbc > 0 and usbp == 0:
@@ -1166,7 +1211,7 @@ class Wizard:
 
     # ===================== 8) RESET / ELEKTRIK GECMISI =====================
     def step_reset(self):
-        self.auto_panel("reset", "8. Reset / Elektrik + USB Guc/Ariza Gecmisi (son 30 gun)")
+        self.auto_panel("reset", "8. Reset / Elektrik + USB Guc/Ariza Gecmisi (son 90 gun)")
 
         def work():
             hist = ps_json(PS_RESET_HIST)
@@ -1192,10 +1237,12 @@ class Wizard:
             fault = [fault]
         self.usb_events = {"surge": surge, "fault": fault}
         c = lambda t: sum(1 for e in data if e.get("type") == t)
-        boot, clean, soft, unexp = c("ACILIS"), c("TEMIZ"), c("SOFT"), c("BEKLENMEDIK")
-        self.record("Reset", "Beklenmedik (30g)", unexp, "WARN" if unexp else "PASS")
-        self.record("Reset", "Soft-reset (30g)", soft, "INFO")
-        self.record("Reset", "Temiz kapanma (30g)", clean, "INFO")
+        boot, clean, soft = c("ACILIS"), c("TEMIZ"), c("SOFT")
+        unexp = count_unexpected(data)          # 41+6008 ayni olay -> teklestirilir
+        self.reset_unexp = unexp
+        self.record("Reset", "Beklenmedik (90g)", unexp, "WARN" if unexp else "PASS")
+        self.record("Reset", "Soft-reset (90g)", soft, "INFO")
+        self.record("Reset", "Temiz kapanma (90g)", clean, "INFO")
         lines = [f"Acilis: {boot}    Temiz: {clean}    Soft-reset: {soft}    BEKLENMEDIK: {unexp}",
                  "(BEKLENMEDIK = elektrik kesintisi veya manuel/hard-reset)", ""]
         for e in data[-8:]:
@@ -1204,8 +1251,8 @@ class Wizard:
         ns, nf = len(surge), len(fault)
         lines.append("")
         lines.append(f"USB guc dalgalanmasi/asiri akim: {ns}   |   USB ariza/taninmayan: {nf}")
-        self.record("USB olay", "Guc dalgalanmasi (30g)", ns, "WARN" if ns else "PASS")
-        self.record("USB olay", "Ariza/taninmayan (30g)", nf, "WARN" if nf else "PASS")
+        self.record("USB olay", "Guc dalgalanmasi (90g)", ns, "WARN" if ns else "PASS")
+        self.record("USB olay", "Ariza/taninmayan (90g)", nf, "WARN" if nf else "PASS")
         if ns:
             self.add_risk(f"{ns} kez USB guc dalgalanmasi/asiri akim (kisa devre benzeri) — bozuk USB cihaz/port; "
                           "elektronik hasar riski, sorunlu cihazi/portu tespit edin.")
@@ -1213,15 +1260,15 @@ class Wizard:
             self.add_risk(f"{nf} kez USB aygit arizasi/taninmama — bozuk USB cihaz takilmis olabilir.")
         for s in surge[-3:]:
             lines.append(f"  ⚡ {s.get('time','')}  {s.get('msg','')[:55]}")
-        # --- guvenilirlik derecesi: beklenmedik reset sayisina gore ---
-        if unexp >= 3:
-            self.set_grade("Reset", 0)
-        elif unexp >= 1:
-            self.set_grade("Reset", 1)
-        elif soft > 0:
-            self.set_grade("Reset", 2)
-        else:
+        # --- guvenilirlik derecesi: beklenmedik kapanma sayisina gore (teklestirilmis) ---
+        if unexp == 0:
             self.set_grade("Reset", 3)
+        elif unexp <= 2:
+            self.set_grade("Reset", 2)      # 1-2 olay (kurulumda fis cekilmis olabilir) - IYI
+        elif unexp <= 5:
+            self.set_grade("Reset", 1)
+        else:
+            self.set_grade("Reset", 0)
         # --- elektrik kesintisi <-> SSD korelasyonu ---
         if unexp > 0:
             disk_g = self.grades.get("Disk", 3)
@@ -1310,14 +1357,16 @@ class Wizard:
         comp = (self.inv or {}).get("computer", os.environ.get("COMPUTERNAME", "PC"))
         path = os.path.join(base_dir(), f"test_{comp}_{stamp}.html")
         ev = self.reset_events or []
-        cU = sum(1 for e in ev if e.get("type") == "BEKLENMEDIK")
+        cU = getattr(self, "reset_unexp", None)
+        if cU is None:
+            cU = count_unexpected(ev)
         if ev:
             reset_rows = "".join(
                 "<tr class='{cls}'><td>{t}</td><td>{ty}</td><td>{d}</td></tr>".format(
                     cls=("fail" if e.get("type") == "BEKLENMEDIK" else ("warn" if e.get("type") == "SOFT" else "")),
                     t=e.get("time", ""), ty=e.get("type", ""), d=e.get("detail", ""))
                 for e in ev)
-            reset_html = ("<h2>Reset / Elektrik Gecmisi (son 30 gun) &mdash; beklenmedik: "
+            reset_html = ("<h2>Reset / Elektrik Gecmisi (son 90 gun) &mdash; beklenmedik: "
                           f"<b>{cU}</b></h2><p class='mut'>BEKLENMEDIK = elektrik kesintisi "
                           "veya manuel/hard-reset</p><table><tr><th>Zaman</th><th>Tip</th>"
                           f"<th>Aciklama</th></tr>{reset_rows}</table>")
@@ -1331,7 +1380,7 @@ class Wizard:
                 f"<tr class='{c}'><td>{e.get('time','')}</td><td>{t}</td><td>{e.get('msg','')}</td></tr>"
                 for t, c, lst in (("USB GUC/ASIRI AKIM", "fail", surge), ("USB ARIZA", "warn", fault))
                 for e in lst)
-            reset_html += ("<h2>USB Guc / Ariza Olaylari (son 30 gun)</h2>"
+            reset_html += ("<h2>USB Guc / Ariza Olaylari (son 90 gun)</h2>"
                            f"<p class='mut'>Guc dalgalanmasi/asiri akim: <b>{len(surge)}</b> &nbsp; "
                            f"Ariza/taninmayan: <b>{len(fault)}</b></p>"
                            f"<table><tr><th>Zaman</th><th>Tip</th><th>Olay</th></tr>{urows}</table>")
@@ -1397,6 +1446,18 @@ td,th{{border:1px solid #30363d;padding:6px 12px;text-align:left}}th{{background
 
     def _quit(self):
         self.root.destroy()
+
+    def _on_resize(self, e):
+        if e.widget is self.root:
+            self.sw = max(400, self.root.winfo_width())
+            self.sh = max(300, self.root.winfo_height())
+
+    def _toggle_fs(self, _=None):
+        self._fs = not self._fs
+        try:
+            self.root.attributes("-fullscreen", self._fs)
+        except Exception:
+            pass
 
 
 def ch_safe(rows):

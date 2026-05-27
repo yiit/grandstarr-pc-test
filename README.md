@@ -10,7 +10,8 @@ J1900, i5 3.nesil gibi düşük güçlü/eski anakartlarda da çalışır ve
 
 ## ⭐ `Endutek-PC-Test.exe` — Hepsi bir arada (ana program)
 
-Çift tıkla → tam ekran test istasyonu. Üstte logo + canlı saat + makine adı.
+Çift tıkla → pencere modunda test istasyonu (1024×768'e sığar, başlık çubuğu + **X ile kapatılır**;
+**F11** ile tam ekran aç/kapat — dead-pixel testi için). Üstte logo + canlı saat + makine adı.
 
 ### Açılış ekranı
 - **Operatör adı + Seri No / İş emri** girişi (rapora yazılır, izlenebilirlik)
@@ -67,7 +68,7 @@ Tüm çekirdeklere seçilen süre boyunca **tam yük** bindirir.
 **7. Ağ / internet**
 Ethernet/WiFi adaptörleri: link durumu, hız (Mbps), MAC + internet **ping** (8.8.8.8).
 
-**8. Reset / elektrik + USB güç/arıza geçmişi (son 30 gün)**
+**8. Reset / elektrik + USB güç/arıza geçmişi (son 90 gün)**
 Windows olay günlüğünden kapanma/açılma olaylarını sınıflandırır:
 **TEMİZ kapanma / SOFT-reset / BEKLENMEDİK (elektrik kesintisi veya hard-reset) / AÇILIŞ**.
 Beklenmedik kapanma + zayıf disk birlikteyse **SSD elektrik hasarı** uyarısı verir.
@@ -99,7 +100,7 @@ Notlar **donanımın kendi karakteristiğine göre** (eski/yavaş donanım adil 
 | **USB** | USB denetleyici + sorunlu USB aygıtı. |
 | **Ekran / Dokunmatik** | Operatör onayı. |
 | **Ağ** | Link + internet erişimi. |
-| **Güvenilirlik** | Son 30 gün beklenmedik reset sayısı. |
+| **Güvenilirlik** | Son 90 gün beklenmedik reset sayısı. |
 
 ---
 
