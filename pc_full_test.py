@@ -82,6 +82,9 @@ $res=Get-CimInstance Win32_VideoController|Where-Object{$_.CurrentHorizontalReso
   computer=$env:COMPUTERNAME
   board="$($bb.Manufacturer) $($bb.Product)"
   serial="$($bios.SerialNumber)"
+  bios="$($bios.Manufacturer) $($bios.SMBIOSBIOSVersion)"
+  bios_year=$(try{$bios.ReleaseDate.Year}catch{0})
+  sysyear=(Get-Date).Year
   os="$($os.Caption) $($os.OSArchitecture)"
   cpu=$cpu.Name.Trim(); cores=$cpu.NumberOfCores; threads=$cpu.NumberOfLogicalProcessors
   ramgb=$ramgb
@@ -97,16 +100,42 @@ $res=Get-CimInstance Win32_VideoController|Where-Object{$_.CurrentHorizontalReso
 PS_NETWORK = r"""
 $ad=@(Get-NetAdapter|Where-Object{$_.HardwareInterface}|ForEach-Object{
   [pscustomobject]@{name=$_.Name;desc=$_.InterfaceDescription;status="$($_.Status)";
-    mbps=$(if($_.ReceiveLinkSpeed){[math]::Round($_.ReceiveLinkSpeed/1e6,0)}else{0});mac=$_.MacAddress}})
+    mbps=$(if($_.Status -eq 'Up' -and $_.ReceiveLinkSpeed){[math]::Round($_.ReceiveLinkSpeed/1e6,0)}else{0});mac=$_.MacAddress}})
 $ping=$null
 try{$p=Test-Connection 8.8.8.8 -Count 3 -ErrorAction Stop;$ping=[math]::Round(($p|Measure-Object ResponseTime -Average).Average,0)}catch{}
 [pscustomobject]@{adapters=$ad;pingms=$ping}|ConvertTo-Json -Depth 5 -Compress
+"""
+
+PS_DISKSCAN = r"""
+$dl=$env:SystemDrive.TrimEnd(':')
+$dirty='NA'
+try{
+  $o=cmd /c "fsutil dirty query $env:SystemDrive" 2>$null
+  if($o -match 'NOT Dirty'){$dirty='temiz'} elseif($o -match 'is Dirty'){$dirty='KIRLI'}
+}catch{}
+$scan='NA'
+try{$scan="$(Repair-Volume -DriveLetter $dl -Scan -ErrorAction Stop)"}catch{$scan='NA'}
+[pscustomobject]@{dirty=$dirty;scan=$scan}|ConvertTo-Json -Compress
 """
 
 PS_TEMP = r"""
 $t=Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue|Select-Object -First 1
 if($t){[math]::Round(($t.CurrentTemperature/10)-273.15,1)}else{'NA'}
 """
+
+# yuk altinda: sicaklik + CPU saati (throttle) + pil/adaptor durumu (tek cagri)
+PS_LOADSTAT = r"""
+$t=Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue|Select-Object -First 1
+$temp=if($t){[math]::Round(($t.CurrentTemperature/10)-273.15,1)}else{$null}
+$c=Get-CimInstance Win32_Processor|Select-Object -First 1
+$b=Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue|Select-Object -First 1
+[pscustomobject]@{temp=$temp;clock=$c.CurrentClockSpeed;maxclock=$c.MaxClockSpeed;
+  batt=$(if($b){[int]$b.BatteryStatus}else{$null});batt_present=[bool]$b}|ConvertTo-Json -Compress
+"""
+
+
+def get_loadstat():
+    return ps_json(PS_LOADSTAT, timeout=20) or {}
 
 PS_RESET_HIST = r"""
 $since=(Get-Date).AddDays(-30)
@@ -160,10 +189,12 @@ def ram_verify(mb):
 
 
 def ssd_speed(size_mb):
+    """Yaz/oku hizi + VERI BUTUNLUGU dogrulamasi. Doner: (write, read, integrity_ok)."""
     fn = os.path.join(tempfile.gettempdir(), "pctest_ssd.bin")
     chunk = 8 * 1024 * 1024
     buf = os.urandom(chunk)
     loops = max(1, size_mb // 8)
+    integrity_ok = True
     try:
         t = time.time()
         with open(fn, "wb", buffering=0) as f:
@@ -174,10 +205,15 @@ def ssd_speed(size_mb):
         write = (loops * 8) / (time.time() - t)
         t = time.time()
         with open(fn, "rb", buffering=0) as f:
-            while f.read(chunk):
-                pass
+            while True:
+                d = f.read(chunk)
+                if not d:
+                    break
+                # geri okunan veri yazilanla birebir mi? (bozuk/zayif blok yakalar)
+                if d != buf[:len(d)]:
+                    integrity_ok = False
         read = (loops * 8) / (time.time() - t)
-        return round(write, 1), round(read, 1)
+        return round(write, 1), round(read, 1), integrity_ok
     finally:
         try:
             os.remove(fn)
@@ -690,6 +726,20 @@ class Wizard:
             poh = dk.get("poh")
             if isinstance(poh, (int, float)) and poh >= 100:
                 self.add_risk(f"Disk '{nm}' calisma saati {poh}h — SIFIR cihazda yuksek (kullanilmis disk olabilir).")
+        # --- BIOS + CMOS/BIOS pil (saat sifirlanmasi) ---
+        biosv = d.get("bios", "")
+        if biosv:
+            lines.append(f"BIOS    : {biosv}  ({d.get('bios_year') or '?'})")
+            self.record("BIOS", "Surum", biosv, "INFO")
+        sysyear = d.get("sysyear") or 0
+        biosyear = d.get("bios_year") or 0
+        # CMOS pili bitince saat sifirlanir -> sistem yili BIOS yilindan eski/mantiksiz olur
+        if sysyear and (sysyear < 2020 or (biosyear and sysyear < biosyear)):
+            self.record("BIOS", "CMOS pil", f"saat sapmis (yil {sysyear})", "WARN")
+            self.add_risk(f"CMOS/BIOS pili (anakart düğme pil) BITMIS olabilir — sistem saati mantiksiz "
+                          f"(yil {sysyear}); saat sifirlaniyor, sahada tarih/lisans/sertifika sorunlari cikar. Pili (CR2032) degistirin.")
+        else:
+            self.record("BIOS", "CMOS pil", "saat tutarli", "PASS")
         # sistem diski bos alan riski
         free = d.get("sysfree_gb")
         if isinstance(free, (int, float)) and free < 15:
@@ -714,7 +764,10 @@ class Wizard:
         self.auto_panel("stress", f"5. CPU / RAM Stres  ({mm} dk {ss} sn)", determinate=True)
         ncpu = os.cpu_count() or 2
         self.status.config(text=f"{ncpu} cekirdek yukleniyor...")
-        temp_before = read_temp()
+        st0 = get_loadstat()
+        temp_before = st0.get("temp")
+        batt_present = bool(st0.get("batt_present"))
+        batt_idle = st0.get("batt")          # yuk oncesi pil durumu
 
         procs = [mp.Process(target=_cpu_worker, args=(dur,)) for _ in range(ncpu)]
         for p in procs:
@@ -730,22 +783,33 @@ class Wizard:
         def waiter():
             t0 = time.time()
             peak = temp_before or 0.0
+            minclock = st0.get("clock") or 0
+            maxclock = st0.get("maxclock") or 0
+            batt_load = []                    # yuk altinda gorulen pil durumlari
             next_s = 0.0
             f = None
             try:
                 if csv_path:
                     f = open(csv_path, "w", encoding="utf-8")
-                    f.write("saat,gecen_dk,cpu_temp_C\n")
+                    f.write("saat,gecen_dk,cpu_temp_C,cpu_mhz\n")
             except Exception:
                 f = None
             while any(p.is_alive() for p in procs):
                 el = time.time() - t0
-                if el >= next_s:                      # 15 sn'de bir sicaklik ornekle
-                    t = read_temp()
+                if el >= next_s:                      # 15 sn'de bir sicaklik+saat+pil ornekle
+                    s = get_loadstat()
+                    t = s.get("temp")
                     if t and t > peak:
                         peak = t
+                    ck = s.get("clock") or 0
+                    if ck and (minclock == 0 or ck < minclock):
+                        minclock = ck
+                    if s.get("maxclock"):
+                        maxclock = s.get("maxclock")
+                    if s.get("batt") is not None:
+                        batt_load.append(s.get("batt"))
                     if f:
-                        f.write(f"{time.strftime('%H:%M:%S')},{el/60:.1f},{t if t else 'NA'}\n"); f.flush()
+                        f.write(f"{time.strftime('%H:%M:%S')},{el/60:.1f},{t if t else 'NA'},{ck}\n"); f.flush()
                     next_s = el + 15
                 rem = max(0, dur - el)
                 pct = min(100, el / dur * 100)
@@ -761,15 +825,19 @@ class Wizard:
                 f.close()
             self.root.after(0, lambda: self.progress.config(text="RAM yaz/oku dogrulamasi..."))
             ram_ok = ram_verify(EXPECTED["ram_test_mb"])
-            temp_after = read_temp()
+            sa = get_loadstat()
+            temp_after = sa.get("temp")
             if temp_after and temp_after > peak:
                 peak = temp_after
             self.stress_peak = peak if peak else None
-            self.root.after(0, lambda: self._after_stress(temp_before, temp_after, peak, ram_ok))
+            extra = {"minclock": minclock, "maxclock": maxclock, "batt_present": batt_present,
+                     "batt_idle": batt_idle, "batt_load": batt_load}
+            self.root.after(0, lambda: self._after_stress(temp_before, temp_after, peak, ram_ok, extra))
 
         threading.Thread(target=waiter, daemon=True).start()
 
-    def _after_stress(self, tb, ta, peak, ram_ok):
+    def _after_stress(self, tb, ta, peak, ram_ok, extra=None):
+        extra = extra or {}
         lines, status = [], "PASS"
         mm, ss = divmod(self.stress_sec, 60)
         lines.append(f"CPU yuku tamamlandi ({os.cpu_count()} cekirdek, {mm} dk {ss} sn).")
@@ -810,20 +878,88 @@ class Wizard:
             cpu_g = 2                          # sicaklik okunamadi -> cezalandirma, notr
         self.set_grade("CPU", cpu_g)
         self.set_grade("RAM", 0 if not ram_ok else self.grades.get("RAM", 2))
+
+        # --- throttle tespiti (saat yuk altinda dustu mu) ---
+        minc = extra.get("minclock") or 0
+        maxc = extra.get("maxclock") or 0
+        throttled = bool(maxc and minc and minc < 0.80 * maxc)
+        if throttled:
+            lines.append(f"CPU saati yuk altinda dustu: {minc}/{maxc} MHz (throttle)")
+            self.record("Stres", "CPU throttle", f"{minc}/{maxc} MHz", "WARN")
+
+        # --- SOGUTMA degerlendirmesi (sicaklik + throttle) ---
+        if peak:
+            if peak > lim:
+                cool_g, cool_t = 0, "YETERSIZ"
+                self.add_risk("Sogutma YETERSIZ — CPU yuk altinda limiti asti; fan/termal macun/havalandirma kontrol edin.")
+            elif peak >= lim - 10:
+                cool_g, cool_t = 1, "SINIRDA"
+                self.add_risk(f"Sogutma SINIRDA — peak {peak:0.0f}C limite yakin; sicak ortamda yetersiz kalabilir.")
+            elif peak >= lim - 25:
+                cool_g, cool_t = 2, "IYI"
+            else:
+                cool_g, cool_t = 3, "COK IYI"
+            if throttled and peak >= lim - 15:        # sicakliktan throttle -> sogutma sucu
+                cool_g = min(cool_g, 1)
+            self.set_grade("Sogutma", cool_g)
+            lines.append(f"Sogutma: {cool_t}")
+            self.record("Stres", "Sogutma", cool_t, "PASS" if cool_g >= 2 else "WARN")
+        else:
+            lines.append("Sogutma: sicaklik okunamadi -> degerlendirilemedi")
+
+        # --- ADAPTOR / GUC degerlendirmesi ---
+        bp = extra.get("batt_present")
+        bi = extra.get("batt_idle")
+        bl = extra.get("batt_load") or []
+        if bp:
+            if bi == 1:                               # idle'da bosaliyor -> priz takili degil
+                self.record("Stres", "Adaptor", "priz takili degil", "WARN")
+                lines.append("Adaptor: PRIZ TAKILI DEGIL — test prizden yapilmali, adaptor degerlendirilemedi.")
+                self.add_risk("Adaptor testi icin cihaz prize takili olmali (pilden calisiyordu).")
+            elif 1 in bl:                             # fisliyken yuk altinda bosaldi -> zayif adaptor
+                self.set_grade("Adaptor", 0)
+                self.record("Stres", "Adaptor", "ZAYIF (yukte pil bosaliyor)", "FAIL")
+                lines.append("Adaptor: ZAYIF — fise takiliyken yuk altinda pil bosaliyor, adaptor yetersiz.")
+                self.add_risk("Adaptor yuku karsilayamiyor (yuk altinda pil bosaliyor) — daha guclu adaptor gerekli.")
+                status = "WARN" if status == "PASS" else status
+            else:
+                self.set_grade("Adaptor", 3)
+                self.record("Stres", "Adaptor", "IYI", "PASS")
+                lines.append("Adaptor: IYI (yuk altinda gucu karsiladi).")
+        else:
+            # pilsiz DC cihaz: sicaklik dusukken throttle -> guc/adaptor siniri suphesi
+            if throttled and peak and peak < lim - 25:
+                self.set_grade("Adaptor", 1)
+                self.record("Stres", "Adaptor/Guc", "sinirli olabilir", "WARN")
+                lines.append("Adaptor/Guc: throttle var ama sicaklik dusuk -> guc/adaptor sinirli olabilir.")
+                self.add_risk("Yuk altinda throttle + dusuk sicaklik — guc/adaptor sinirlamasi olabilir, adaptoru kontrol edin.")
+            else:
+                self.set_grade("Adaptor", 3)
+                self.record("Stres", "Adaptor/Guc", "yeterli (DC)", "PASS")
+                lines.append("Adaptor/Guc: yeterli (yuk altinda guc sinirlamasi gorulmedi).")
+
         self.finish_auto("stress", status, lines)
 
-    # ===================== 6) SSD =====================
+    # ===================== 6) SSD / DISK SAGLIK + HIZ =====================
     def step_ssd(self):
-        self.auto_panel("ssd", "6. SSD Hiz Testi")
-        self.status.config(text=f"{EXPECTED['ssd_test_mb']} MB yaz/oku...")
-        self.run_async(lambda: ssd_speed(EXPECTED["ssd_test_mb"]), self._after_ssd)
+        self.auto_panel("ssd", "6. SSD / Disk  -  saglik + hiz + butunluk")
+        self.status.config(text=f"{EXPECTED['ssd_test_mb']} MB yaz/oku/dogrula + dosya sistemi taramasi...")
+
+        def work():
+            spd = ssd_speed(EXPECTED["ssd_test_mb"])
+            scan = ps_json(PS_DISKSCAN, timeout=90)
+            return spd, scan
+
+        self.run_async(work, self._after_ssd)
 
     def _after_ssd(self, res):
-        if not isinstance(res, tuple):
+        spd, scan = (res if isinstance(res, tuple) and len(res) == 2 else (None, None))
+        if not (isinstance(spd, tuple) and len(spd) == 3):
             self.record("SSD", "Hiz", "hata", "WARN")
+            self.set_grade("Disk", min(self.grades.get("Disk", 3), 1))
             self.finish_auto("ssd", "WARN", ["SSD testi yapilamadi."])
             return
-        w, r = res
+        w, r, integ = spd
         status = "PASS"
         ws = "PASS" if w >= EXPECTED["min_ssd_write"] else "WARN"
         rs = "PASS" if r >= EXPECTED["min_ssd_read"] else "WARN"
@@ -831,22 +967,53 @@ class Wizard:
             status = "WARN"
         self.record("SSD", "Yazma", f"{w} MB/s", ws)
         self.record("SSD", "Okuma", f"{r} MB/s", rs)
+        lines = [f"Yazma: {w} MB/s   Okuma: {r} MB/s"]
+
+        # --- veri butunlugu (elektrik kesintisi/bozuk blok yakalar) ---
+        if integ:
+            self.record("SSD", "Veri butunlugu", "OK", "PASS")
+            lines.append("Veri butunlugu: OK (yazilan = okunan)")
+        else:
+            self.record("SSD", "Veri butunlugu", "HATA", "FAIL")
+            lines.append("Veri butunlugu: HATA! bozuk/zayif blok")
+            status = "FAIL"
+            self.add_risk("SSD veri butunlugu BOZUK — yazilan veri geri okunamadi; disk arizali/bozuk blok, DEGISTIRIN.")
+
+        # --- dosya sistemi dirty + tarama ---
+        dirty = (scan or {}).get("dirty", "NA")
+        scn = (scan or {}).get("scan", "NA")
+        if dirty == "KIRLI":
+            lines.append("Dosya sistemi: KIRLI bit set (duzgun kapanmamis)")
+            self.record("Disk", "Dosya sistemi", "KIRLI bit", "WARN")
+            self.add_risk("Dosya sistemi 'kirli' isaretli — son kapanma duzgun degildi (elektrik?); chkdsk onerilir.")
+            if status == "PASS":
+                status = "WARN"
+        if scn and scn not in ("NoErrorsFound", "NA", ""):
+            lines.append(f"Disk taramasi: {scn}")
+            self.record("Disk", "Tarama", scn, "WARN")
+            self.add_risk(f"Disk taramasi '{scn}' — dosya sistemi bozulmasi; chkdsk/onarim gerekli (elektrik kesintisi hasari olabilir).")
+            if status == "PASS":
+                status = "WARN"
+
         # --- hiz derecesi: MEDYA tipine gore adil (HDD/SATA-SSD/NVMe) ---
         bw, br = disk_speed_baseline(self.sys_bus, self.sys_media)
         ratio = min(w / bw if bw else 1, r / br if br else 1)
         if ratio >= 0.9:
-            sg = 3                 # tipine gore beklenen hizda/ustunde
+            sg = 3
         elif ratio >= 0.6:
             sg = 2
         elif ratio >= 0.4:
             sg = 1
         else:
-            sg = 0                 # tipine gore bile cok yavas (ariza/baglanti sorunu)
-        # disk genel notu = saglik ve hiz derecesinin dusugu
+            sg = 0
+        # butunluk/dosya sistemi sorunu varsa disk notu kotulesir
+        if not integ:
+            sg = 0
+        elif dirty == "KIRLI" or (scn and scn not in ("NoErrorsFound", "NA", "")):
+            sg = min(sg, 1)
         self.set_grade("Disk", min(self.grades.get("Disk", 3), sg))
-        self.finish_auto("ssd", status,
-                         [f"Yazma: {w} MB/s   Okuma: {r} MB/s",
-                          f"Beklenen ({self.sys_bus or '?'}): ~{bw}/{br} MB/s"])
+        lines.append(f"Beklenen ({self.sys_bus or '?'}): ~{bw}/{br} MB/s")
+        self.finish_auto("ssd", status, lines)
 
     # ===================== 7) AG =====================
     def step_network(self):
@@ -922,6 +1089,15 @@ class Wizard:
             self.set_grade("Reset", 2)
         else:
             self.set_grade("Reset", 3)
+        # --- elektrik kesintisi <-> SSD korelasyonu ---
+        if unexp > 0:
+            disk_g = self.grades.get("Disk", 3)
+            if disk_g <= 1:
+                self.add_risk(f"{unexp} beklenmedik kapanma (elektrik?) VE disk saglik/butunlugu zayif — "
+                              "SSD elektrik kesintisinden zarar gormus olabilir, DEGISTIRMEYI dusunun.")
+            else:
+                self.add_risk(f"{unexp} beklenmedik kapanma (elektrik?) — SSD'ler bundan bozulabilir; "
+                              "sahada UPS/kesintisiz guc onerilir.")
         self.finish_auto("reset", "WARN" if unexp else "PASS", lines)
 
     # ===================== 9) OZET =====================
@@ -954,7 +1130,8 @@ class Wizard:
                      font=("Segoe UI", 18, "bold"), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=8)
 
         # --- her donanim icin ayri not karti ---
-        order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"), ("RAM", "RAM"),
+        order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"),
+                 ("Sogutma", "Sogutma"), ("Adaptor", "Adaptor"), ("RAM", "RAM"),
                  ("Disk", "Disk/SSD"), ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
         cards = tk.Frame(b, bg=BG); cards.pack(anchor="w", padx=36, pady=4)
         col = 0
@@ -963,7 +1140,7 @@ class Wizard:
                 continue
             g = self.grades[key]
             cf = tk.Frame(cards, bg=PANEL, highlightbackground=GRADE_COLORS[g], highlightthickness=2)
-            cf.grid(row=0, column=col, padx=5, pady=4, sticky="n")
+            cf.grid(row=col // 5, column=col % 5, padx=5, pady=4, sticky="n")
             tk.Label(cf, text=disp, font=("Segoe UI", 11), fg=MUT, bg=PANEL).pack(padx=12, pady=(8, 0))
             tk.Label(cf, text=GRADE_LABELS[g], font=("Segoe UI", 12, "bold"),
                      fg=GRADE_COLORS[g], bg=PANEL).pack(padx=12, pady=(0, 8))
@@ -1031,7 +1208,8 @@ class Wizard:
             for c, i, v, s in self.rows)
         # genel not + her donanim icin not rozetleri
         og = self.overall_grade()
-        grade_order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"), ("RAM", "RAM"),
+        grade_order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"),
+                       ("Sogutma", "Sogutma"), ("Adaptor", "Adaptor"), ("RAM", "RAM"),
                        ("Disk", "Disk/SSD"), ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
         chips = "".join(
             f"<span class='chip' style='border-color:{GRADE_COLORS[self.grades[k]]};color:{GRADE_COLORS[self.grades[k]]}'>"
