@@ -21,6 +21,9 @@ Test (GUI'siz):  python pc_full_test.py --selftest
 import os, sys, time, json, math, threading, tempfile, subprocess, base64
 import multiprocessing as mp
 import tkinter as tk
+from tkinter import ttk
+
+APP_VERSION = "1.1"
 
 # ======================= AYARLAR (uretim hatti) =======================
 EXPECTED = {
@@ -215,6 +218,22 @@ GREEN = "#3fb950"; RED = "#f85149"; YEL = "#d29922"; MUT = "#8b949e"
 PALETTE = [("Kirmizi", "#FF0000"), ("Yesil", "#00FF00"), ("Mavi", "#0000FF"),
            ("Beyaz", "#FFFFFF"), ("Siyah", "#000000"), ("Gri %50", "#808080")]
 
+# 4 seviyeli derecelendirme (donanimin KENDI karakteristigine gore)
+GRADE_LABELS = ["COK KOTU", "KOTU", "IYI", "SUPER"]
+GRADE_COLORS = ["#f85149", "#e8833a", "#3fb950", "#2dd4bf"]
+
+
+def disk_speed_baseline(bus, media):
+    """Medya/bus tipine gore beklenen (write, read) MB/s -> yas/teknolojiye gore adil."""
+    b = (str(bus) + " " + str(media)).lower()
+    if "nvme" in b:
+        return 700, 1500
+    if "ssd" in b:                 # SATA SSD
+        return 250, 350
+    if "hdd" in b or "spin" in b:  # mekanik disk: bu kadari NORMAL, daha fazlasi beklenmez
+        return 60, 90
+    return 150, 250                # bilinmiyor: SATA SSD'ye yakin varsay
+
 
 class Wizard:
     def __init__(self, root):
@@ -232,6 +251,29 @@ class Wizard:
         self.stress_peak = None
         self.stress_csv = None
         self.minutes_var = tk.StringVar(value="1")
+        self.op_var = tk.StringVar(value="")     # operator adi
+        self.sn_var = tk.StringVar(value="")     # seri no / is emri
+        self.grades = {}                         # donanim -> 0..3 (karakteristige gore)
+        self.sys_bus = ""; self.sys_media = ""   # sistem diski bus/media (hiz derecesi icin)
+
+        # ttk profesyonel stil
+        try:
+            self.style = ttk.Style()
+            self.style.theme_use("clam")
+            self.style.configure("Green.Horizontal.TProgressbar", troughcolor=PANEL,
+                                  background=GREEN, bordercolor=PANEL, lightcolor=GREEN, darkcolor=GREEN)
+            self.style.configure("Blue.Horizontal.TProgressbar", troughcolor=PANEL,
+                                  background=ACC, bordercolor=PANEL, lightcolor=ACC, darkcolor=ACC)
+        except Exception:
+            self.style = None
+        root.title(f"Endutek PC Test  v{APP_VERSION}")
+        try:
+            if self.__dict__.get("logo"):
+                root.iconphoto(True, self.logo)
+        except Exception:
+            pass
+        self._update_clock()
+
         # hangi testler yapilacak (intro'da tiklenir) - 'done' her zaman calisir
         self.enabled = {k: tk.BooleanVar(value=True)
                         for k in ("screen", "touch", "grid", "inv", "stress", "ssd", "net", "reset")}
@@ -269,10 +311,8 @@ class Wizard:
         bar = tk.Frame(self.root, bg=PANEL, width=300)
         bar.pack(side="left", fill="y")
         bar.pack_propagate(False)
-        if self.logo:
-            tk.Label(bar, image=self.logo, bg="white", padx=12, pady=6).pack(pady=(22, 6))
-        tk.Label(bar, text="TUM TESTLER", font=("Segoe UI", 16, "bold"),
-                 fg=ACC, bg=PANEL).pack(pady=(6, 18))
+        tk.Label(bar, text="TEST ADIMLARI", font=("Segoe UI", 15, "bold"),
+                 fg=ACC, bg=PANEL).pack(pady=(22, 16))
         for k, title, _ in self.sequence:
             disabled = (k in self.enabled and not self.enabled[k].get())
             st = self.step_state.get(k, "")
@@ -286,9 +326,33 @@ class Wizard:
             tk.Label(bar, text=txt, anchor="w",
                      font=("Segoe UI", 12, "bold" if cur and not disabled else "normal"),
                      fg=(FG if cur and not disabled else col), bg=PANEL).pack(fill="x", padx=18, pady=4)
-        self.body = tk.Frame(self.root, bg=BG)
-        self.body.pack(side="right", fill="both", expand=True)
+        right = tk.Frame(self.root, bg=BG)
+        right.pack(side="right", fill="both", expand=True)
+
+        # --- ust baslik cubugu (logo + baslik + canli saat/makine) ---
+        hdr = tk.Frame(right, bg=PANEL, height=58)
+        hdr.pack(fill="x"); hdr.pack_propagate(False)
+        if self.logo:
+            tk.Label(hdr, image=self.logo, bg="white", padx=8, pady=4).pack(side="left", padx=12, pady=8)
+        tk.Label(hdr, text="PC TEST ISTASYONU", font=("Segoe UI", 15, "bold"),
+                 fg=FG, bg=PANEL).pack(side="left", padx=14)
+        self.clock_lbl = tk.Label(hdr, text="", font=("Segoe UI", 12), fg=MUT, bg=PANEL)
+        self.clock_lbl.pack(side="right", padx=16)
+        tk.Frame(right, bg="#30363d", height=1).pack(fill="x")
+
+        self.body = tk.Frame(right, bg=BG)
+        self.body.pack(fill="both", expand=True)
         return self.body
+
+    def _update_clock(self):
+        try:
+            if getattr(self, "clock_lbl", None) and self.clock_lbl.winfo_exists():
+                self.clock_lbl.config(
+                    text=time.strftime("%d.%m.%Y   %H:%M:%S") + "    |    " +
+                         os.environ.get("COMPUTERNAME", ""))
+        except Exception:
+            pass
+        self.root.after(1000, self._update_clock)
 
     def set_state(self, key, st):
         self.step_state[key] = st
@@ -315,9 +379,16 @@ class Wizard:
     def _intro(self):
         b = self._shell()
         tk.Label(b, text="DOKUNMATIK PC  -  TAM TEST", font=("Segoe UI", 28, "bold"),
-                 fg=ACC, bg=BG).pack(pady=(40, 6))
+                 fg=ACC, bg=BG).pack(pady=(26, 4))
         tk.Label(b, text="Yapilacak testleri isaretleyin; sadece isaretliler sirayla calisir.",
-                 font=("Segoe UI", 14), fg=MUT, bg=BG, justify="center").pack(pady=6)
+                 font=("Segoe UI", 14), fg=MUT, bg=BG, justify="center").pack(pady=4)
+
+        # --- operator / seri no (izlenebilirlik) ---
+        meta = tk.Frame(b, bg=BG); meta.pack(pady=8)
+        tk.Label(meta, text="Operator:", font=("Segoe UI", 12), fg=MUT, bg=BG).grid(row=0, column=0, padx=6, pady=4, sticky="e")
+        tk.Entry(meta, textvariable=self.op_var, width=20, font=("Segoe UI", 12), justify="center").grid(row=0, column=1, padx=6)
+        tk.Label(meta, text="Seri No / Is emri:", font=("Segoe UI", 12), fg=MUT, bg=BG).grid(row=0, column=2, padx=6, pady=4, sticky="e")
+        tk.Entry(meta, textvariable=self.sn_var, width=20, font=("Segoe UI", 12), justify="center").grid(row=0, column=3, padx=6)
 
         # --- test secimi (tikler) ---
         sel = tk.Frame(b, bg=BG); sel.pack(pady=6)
@@ -354,8 +425,8 @@ class Wizard:
         tk.Button(b, text="TESTE BASLA  ▶", font=("Segoe UI", 20, "bold"),
                   bg=GREEN, fg="#06210f", relief="flat", padx=40, pady=14,
                   command=self._start).pack(pady=18)
-        tk.Label(b, text="Uzun testlerde sicaklik 15 sn'de bir orneklenir ve CSV'ye loglanir.  (acil cikis: F10)",
-                 font=("Segoe UI", 10), fg=MUT, bg=BG).pack(side="bottom", pady=14)
+        tk.Label(b, text=f"Endutek PC Test  v{APP_VERSION}   •   Uzun testlerde sicaklik 15 sn'de bir CSV'ye loglanir   •   acil cikis: F10",
+                 font=("Segoe UI", 10), fg=MUT, bg=BG).pack(side="bottom", pady=12)
 
     def _start(self):
         try:
@@ -366,14 +437,22 @@ class Wizard:
         self.advance()
 
     # ---------- ortak: otomatik adim cercevesi ----------
-    def auto_panel(self, key, title):
+    def auto_panel(self, key, title, determinate=False):
         self.set_state(key, "RUN")
         b = self._shell()
-        tk.Label(b, text=title, font=("Segoe UI", 22, "bold"), fg=FG, bg=BG).pack(pady=(40, 8), anchor="w", padx=40)
+        tk.Label(b, text=title, font=("Segoe UI", 22, "bold"), fg=FG, bg=BG).pack(pady=(36, 8), anchor="w", padx=40)
         self.status = tk.Label(b, text="Calisiyor...", font=("Segoe UI", 14), fg=ACC, bg=BG)
         self.status.pack(anchor="w", padx=40)
+        # ilerleme cubugu (ttk)
+        self.pbar = ttk.Progressbar(b, length=560, mode=("determinate" if determinate else "indeterminate"),
+                                    style="Blue.Horizontal.TProgressbar")
+        self.pbar.pack(anchor="w", padx=40, pady=14)
+        if determinate:
+            self.pbar["maximum"] = 100
+        else:
+            self.pbar.start(14)
         self.detail = tk.Label(b, text="", font=("Consolas", 13), fg=FG, bg=BG, justify="left")
-        self.detail.pack(anchor="w", padx=40, pady=16)
+        self.detail.pack(anchor="w", padx=40, pady=6)
         self.progress = tk.Label(b, text="", font=("Segoe UI", 13), fg=MUT, bg=BG)
         self.progress.pack(anchor="w", padx=40)
         return b
@@ -389,12 +468,34 @@ class Wizard:
 
     def finish_auto(self, key, status, lines):
         self.set_state(key, status)
+        try:
+            self.pbar.stop()
+            self.pbar["mode"] = "determinate"
+            self.pbar["maximum"] = 100
+            self.pbar["value"] = 100
+            self.pbar["style"] = "Green.Horizontal.TProgressbar" if status != "FAIL" else "Blue.Horizontal.TProgressbar"
+        except Exception:
+            pass
         col = {"PASS": GREEN, "FAIL": RED, "WARN": YEL}.get(status, FG)
         self.status.config(text=f"SONUC: {status}", fg=col)
         self.detail.config(text="\n".join(lines))
         self.progress.config(text="Sonraki adima geciliyor...")
         # FAIL'de operator gorsun: 5 sn, aksi halde 2.5 sn sonra otomatik ilerle
         self.root.after(5000 if status == "FAIL" else 2500, self.advance)
+
+    # ---------- derecelendirme (her donanim icin) ----------
+    def set_grade(self, comp, score):
+        self.grades[comp] = max(0, min(3, int(score)))
+
+    def _set_pbar(self, v):
+        try:
+            self.pbar["value"] = v
+        except Exception:
+            pass
+
+    def overall_grade(self):
+        """Genel not = en zayif bilesen (zincir en zayif halkasi kadar saglam)."""
+        return min(self.grades.values()) if self.grades else None
 
     # ===================== 1) EKRAN =====================
     def step_screen(self):
@@ -435,6 +536,7 @@ class Wizard:
         def done(st):
             self.set_state("screen", st)
             self.record("Ekran", "Renk/dead-pixel", "operator: " + st, st)
+            self.set_grade("Ekran", 3 if st == "PASS" else 0)
             self.advance()
 
         cv.bind("<Button-1>", nxt)
@@ -467,6 +569,7 @@ class Wizard:
         def done(st):
             self.set_state("touch", st)
             self.record("Dokunmatik", "Cizim", "operator: " + st, st)
+            self.set_grade("Dokunmatik", 3 if st == "PASS" else 0)
             self.advance()
 
         tk.Button(self.root, text="GECTI ✓", font=("Segoe UI", 16, "bold"), bg=GREEN, fg="#06210f",
@@ -497,6 +600,7 @@ class Wizard:
         def done(st):
             self.set_state("grid", st)
             self.record("Dokunmatik", "Izgara kapsama", f"{len(touched)}/{cols*rows} hucre", st)
+            self.set_grade("Dokunmatik", min(self.grades.get("Dokunmatik", 3), 3 if st == "PASS" else 0))
             self.advance()
 
         def touch(e):
@@ -543,6 +647,9 @@ class Wizard:
             self.record("Envanter", "RAM", f"{ram} GB", "PASS")
         else:
             self.record("Envanter", "RAM", f"{ram} GB (< {EXPECTED['min_ram_gb']})", "FAIL"); status = "FAIL"
+        dh = 3
+        if disks:
+            self.sys_media = disks[0].get("media", ""); self.sys_bus = disks[0].get("bus", "")
         for dk in disks:
             nm = dk.get("name", "")
             h = dk.get("health", "")
@@ -552,6 +659,21 @@ class Wizard:
             ttxt = f", {dk.get('temp')}C" if dk.get("temp") else ""
             lines.append(f"Disk    : {nm} {dk.get('gb')}GB {dk.get('media','')} [{h}{ttxt}]")
             self.record("Disk", nm, f"{dk.get('gb')}GB / {h}", st)
+            # --- disk SAGLIK derecesi (karakteristige gore) ---
+            _w, _t, _ph = dk.get("wear"), dk.get("temp"), dk.get("poh")
+            if h != "Healthy":
+                g = 0
+            elif dk.get("readErr") or dk.get("writeErr"):
+                g = 1
+            elif isinstance(_w, (int, float)) and _w >= 10:
+                g = 1
+            elif isinstance(_t, (int, float)) and _t >= 60:
+                g = 1
+            elif isinstance(_ph, (int, float)) and _ph >= 100:
+                g = 2
+            else:
+                g = 3
+            dh = min(dh, g)
             # --- saha riski: SMART karakteristikleri ---
             if h and h != "Healthy":
                 self.add_risk(f"Disk '{nm}' saglik durumu '{h}' — sahada arizalanabilir, DEGISTIRIN.")
@@ -574,6 +696,14 @@ class Wizard:
             self.add_risk(f"Sistem diski bos alani dusuk ({free} GB) — sahada guncelleme/log dolma sorunu.")
         if (d.get("rambanks") or 0) == 1 and ram <= 4:
             self.add_risk("Tek RAM cubugu + dusuk kapasite — dual-channel yok, performans dusuk olabilir.")
+        # --- dereceler: Disk (saglik) + RAM (saglik/kanal) ---
+        self.set_grade("Disk", dh)
+        if ram < EXPECTED["min_ram_gb"]:
+            self.set_grade("RAM", 1)
+        elif (d.get("rambanks") or 0) >= 2:
+            self.set_grade("RAM", 3)
+        else:
+            self.set_grade("RAM", 2)
         self.record("Envanter", "GPU", d.get("gpu", ""), "INFO")
         self.finish_auto("inv", status, lines)
 
@@ -581,7 +711,7 @@ class Wizard:
     def step_stress(self):
         dur = self.stress_sec
         mm, ss = divmod(dur, 60)
-        self.auto_panel("stress", f"5. CPU / RAM Stres  ({mm} dk {ss} sn)")
+        self.auto_panel("stress", f"5. CPU / RAM Stres  ({mm} dk {ss} sn)", determinate=True)
         ncpu = os.cpu_count() or 2
         self.status.config(text=f"{ncpu} cekirdek yukleniyor...")
         temp_before = read_temp()
@@ -618,9 +748,12 @@ class Wizard:
                         f.write(f"{time.strftime('%H:%M:%S')},{el/60:.1f},{t if t else 'NA'}\n"); f.flush()
                     next_s = el + 15
                 rem = max(0, dur - el)
-                self.root.after(0, lambda e=el, r=rem, pk=peak: self.progress.config(
-                    text=f"gecen {e/60:0.1f} dk  /  kalan {r/60:0.1f} dk    peak sicaklik: "
-                         f"{('%.0f C' % pk) if pk else 'N/A'}"))
+                pct = min(100, el / dur * 100)
+                self.root.after(0, lambda e=el, r=rem, pk=peak, pc=pct: (
+                    self.progress.config(
+                        text=f"gecen {e/60:0.1f} dk  /  kalan {r/60:0.1f} dk    peak sicaklik: "
+                             f"{('%.0f C' % pk) if pk else 'N/A'}"),
+                    self._set_pbar(pc)))
                 time.sleep(0.5)
             for p in procs:
                 p.join()
@@ -662,6 +795,21 @@ class Wizard:
         if self.stress_csv:
             lines.append(f"Sicaklik logu: {os.path.basename(self.stress_csv)}")
             self.record("Stres", "Burn-in log", os.path.basename(self.stress_csv), "INFO")
+        # --- dereceler: CPU (sicaklik marji / throttle) + RAM (verify) ---
+        lim = EXPECTED["max_cpu_temp"]
+        if peak:
+            if peak > lim:
+                cpu_g = 0                      # asti: sogutma yetersiz
+            elif peak >= lim - 10:
+                cpu_g = 1                      # limite cok yakin
+            elif peak >= lim - 25:
+                cpu_g = 2                      # makul marj
+            else:
+                cpu_g = 3                      # bol marj, kararli (eski CPU icin SUPER)
+        else:
+            cpu_g = 2                          # sicaklik okunamadi -> cezalandirma, notr
+        self.set_grade("CPU", cpu_g)
+        self.set_grade("RAM", 0 if not ram_ok else self.grades.get("RAM", 2))
         self.finish_auto("stress", status, lines)
 
     # ===================== 6) SSD =====================
@@ -683,7 +831,22 @@ class Wizard:
             status = "WARN"
         self.record("SSD", "Yazma", f"{w} MB/s", ws)
         self.record("SSD", "Okuma", f"{r} MB/s", rs)
-        self.finish_auto("ssd", status, [f"Yazma: {w} MB/s", f"Okuma: {r} MB/s"])
+        # --- hiz derecesi: MEDYA tipine gore adil (HDD/SATA-SSD/NVMe) ---
+        bw, br = disk_speed_baseline(self.sys_bus, self.sys_media)
+        ratio = min(w / bw if bw else 1, r / br if br else 1)
+        if ratio >= 0.9:
+            sg = 3                 # tipine gore beklenen hizda/ustunde
+        elif ratio >= 0.6:
+            sg = 2
+        elif ratio >= 0.4:
+            sg = 1
+        else:
+            sg = 0                 # tipine gore bile cok yavas (ariza/baglanti sorunu)
+        # disk genel notu = saglik ve hiz derecesinin dusugu
+        self.set_grade("Disk", min(self.grades.get("Disk", 3), sg))
+        self.finish_auto("ssd", status,
+                         [f"Yazma: {w} MB/s   Okuma: {r} MB/s",
+                          f"Beklenen ({self.sys_bus or '?'}): ~{bw}/{br} MB/s"])
 
     # ===================== 7) AG =====================
     def step_network(self):
@@ -717,6 +880,17 @@ class Wizard:
                 status = "WARN"
         if not up_any:
             status = "WARN"
+        # --- ag derecesi: link + internet ---
+        eth_up = any(a.get("status") == "Up" and "Ethernet" in a.get("name", "") for a in ad)
+        if not up_any:
+            ng = 0
+        elif eth_up and ping is not None:
+            ng = 3
+        elif up_any and ping is not None:
+            ng = 2
+        else:
+            ng = 1
+        self.set_grade("Ag", ng)
         self.finish_auto("net", status, lines)
 
     # ===================== 8) RESET / ELEKTRIK GECMISI =====================
@@ -739,6 +913,15 @@ class Wizard:
                  "(BEKLENMEDIK = elektrik kesintisi veya manuel/hard-reset)", ""]
         for e in data[-10:]:
             lines.append(f"{e.get('time','')}  [{e.get('type',''):<11}] {e.get('detail','')[:55]}")
+        # --- guvenilirlik derecesi: beklenmedik reset sayisina gore ---
+        if unexp >= 3:
+            self.set_grade("Reset", 0)
+        elif unexp >= 1:
+            self.set_grade("Reset", 1)
+        elif soft > 0:
+            self.set_grade("Reset", 2)
+        else:
+            self.set_grade("Reset", 3)
         self.finish_auto("reset", "WARN" if unexp else "PASS", lines)
 
     # ===================== 9) OZET =====================
@@ -749,11 +932,42 @@ class Wizard:
         verdict = "RED (FAIL)" if fails else ("SARTLI (WARN)" if warns else "GECTI (PASS)")
         vcol = RED if fails else (YEL if warns else GREEN)
 
-        tk.Label(b, text="OZET", font=("Segoe UI", 26, "bold"), fg=FG, bg=BG).pack(anchor="w", padx=40, pady=(28, 4))
-        head = self.inv.get("computer", "") + "  |  S/N: " + self.inv.get("serial", "") if self.inv else ""
-        tk.Label(b, text=head, font=("Segoe UI", 12), fg=MUT, bg=BG).pack(anchor="w", padx=40)
-        tk.Label(b, text=f"SONUC: {verdict}   (FAIL={fails}  WARN={warns})",
-                 font=("Segoe UI", 20, "bold"), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=(10, 4))
+        head = ""
+        if self.inv:
+            head = f"{self.inv.get('computer','')}   |   S/N: {self.sn_var.get() or self.inv.get('serial','')}"
+        if self.op_var.get():
+            head += f"   |   Operator: {self.op_var.get()}"
+        tk.Label(b, text="TEST OZETI", font=("Segoe UI", 20, "bold"), fg=FG, bg=BG).pack(anchor="w", padx=40, pady=(14, 0))
+        tk.Label(b, text=head, font=("Segoe UI", 11), fg=MUT, bg=BG).pack(anchor="w", padx=40)
+
+        # --- GENEL DEGERLENDIRME banner (en dusuk bilesen notu) ---
+        og = self.overall_grade()
+        if og is not None:
+            gl, gc = GRADE_LABELS[og], GRADE_COLORS[og]
+            ban = tk.Frame(b, bg=gc); ban.pack(fill="x", padx=40, pady=(10, 4))
+            tk.Label(ban, text=f"GENEL DEGERLENDIRME:  {gl}", font=("Segoe UI", 22, "bold"),
+                     fg="#0d1117", bg=gc).pack(side="left", padx=18, pady=10)
+            tk.Label(ban, text=f"({verdict}  FAIL={fails} WARN={warns})",
+                     font=("Segoe UI", 12, "bold"), fg="#0d1117", bg=gc).pack(side="right", padx=18)
+        else:
+            tk.Label(b, text=f"SONUC: {verdict}   (FAIL={fails}  WARN={warns})",
+                     font=("Segoe UI", 18, "bold"), fg=vcol, bg=BG).pack(anchor="w", padx=40, pady=8)
+
+        # --- her donanim icin ayri not karti ---
+        order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"), ("RAM", "RAM"),
+                 ("Disk", "Disk/SSD"), ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
+        cards = tk.Frame(b, bg=BG); cards.pack(anchor="w", padx=36, pady=4)
+        col = 0
+        for key, disp in order:
+            if key not in self.grades:
+                continue
+            g = self.grades[key]
+            cf = tk.Frame(cards, bg=PANEL, highlightbackground=GRADE_COLORS[g], highlightthickness=2)
+            cf.grid(row=0, column=col, padx=5, pady=4, sticky="n")
+            tk.Label(cf, text=disp, font=("Segoe UI", 11), fg=MUT, bg=PANEL).pack(padx=12, pady=(8, 0))
+            tk.Label(cf, text=GRADE_LABELS[g], font=("Segoe UI", 12, "bold"),
+                     fg=GRADE_COLORS[g], bg=PANEL).pack(padx=12, pady=(0, 8))
+            col += 1
 
         # --- saha risk uyarilari ---
         if self.risks:
@@ -770,7 +984,7 @@ class Wizard:
                      font=("Segoe UI", 12), fg=GREEN, bg=BG).pack(anchor="w", padx=40, pady=2)
 
         wrap = tk.Frame(b, bg=BG); wrap.pack(fill="both", expand=True, padx=40, pady=6)
-        txt = tk.Text(wrap, bg=PANEL, fg=FG, font=("Consolas", 11), relief="flat", height=18)
+        txt = tk.Text(wrap, bg=PANEL, fg=FG, font=("Consolas", 11), relief="flat", height=10)
         txt.pack(fill="both", expand=True)
         for cat, item, val, st in self.rows:
             txt.insert("end", f"[{st:<4}] {cat:<10} {item:<22} {val}\n")
@@ -815,6 +1029,20 @@ class Wizard:
         rows = "\n".join(
             f"<tr class='{s.lower()}'><td>{s}</td><td>{c}</td><td>{i}</td><td>{v}</td></tr>"
             for c, i, v, s in self.rows)
+        # genel not + her donanim icin not rozetleri
+        og = self.overall_grade()
+        grade_order = [("Ekran", "Ekran"), ("Dokunmatik", "Dokunmatik"), ("CPU", "CPU"), ("RAM", "RAM"),
+                       ("Disk", "Disk/SSD"), ("Ag", "Ag"), ("Reset", "Guvenilirlik")]
+        chips = "".join(
+            f"<span class='chip' style='border-color:{GRADE_COLORS[self.grades[k]]};color:{GRADE_COLORS[self.grades[k]]}'>"
+            f"{disp}: {GRADE_LABELS[self.grades[k]]}</span>"
+            for k, disp in grade_order if k in self.grades)
+        if og is not None:
+            grade_html = (f"<div class='grade' style='background:{GRADE_COLORS[og]}'>"
+                          f"GENEL DEGERLENDIRME: {GRADE_LABELS[og]}</div><div>{chips}</div>")
+        else:
+            grade_html = ""
+        op = self.op_var.get(); sn = self.sn_var.get()
         inv = self.inv or {}
         _uri = logo_data_uri()
         logo_tag = f"<div class='logobox'><img src='{_uri}'></div>" if _uri else ""
@@ -828,10 +1056,13 @@ td,th{{border:1px solid #30363d;padding:6px 12px;text-align:left}}th{{background
 .logobox img{{height:40px;display:block}}
 .riskbox{{background:#2b2410;border:1px solid #d29922;border-radius:8px;padding:10px 16px;margin:12px 0;color:#f0d890}}
 .riskbox b{{color:#d29922}}
+.grade{{font-size:22px;font-weight:bold;color:#0d1117;padding:12px 18px;border-radius:8px;display:inline-block;margin:10px 0}}
+.chip{{display:inline-block;border:2px solid;border-radius:16px;padding:4px 12px;margin:3px;font-weight:bold;font-size:13px}}
 </style></head><body>
 {logo_tag}
-<h1>Dokunmatik PC - Tam Test Raporu</h1>
-<p class='mut'>{comp} &nbsp;|&nbsp; S/N: {inv.get('serial','')} &nbsp;|&nbsp; {inv.get('board','')} &nbsp;|&nbsp; {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+<h1>Dokunmatik PC - Tam Test Raporu  <span class='mut' style='font-size:13px'>v{APP_VERSION}</span></h1>
+<p class='mut'>{comp} &nbsp;|&nbsp; S/N: {sn or inv.get('serial','')} &nbsp;|&nbsp; Operator: {op or '-'} &nbsp;|&nbsp; {inv.get('board','')} &nbsp;|&nbsp; {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+{grade_html}
 <div class='v {vcls}'>SONUC: {verdict} &nbsp; (FAIL={fails} WARN={warns})</div>
 {risk_html}
 <table><tr><th>Durum</th><th>Kategori</th><th>Test</th><th>Deger</th></tr>
