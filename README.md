@@ -1,4 +1,4 @@
-# Endutek — Dokunmatik PC Donanım Test Aracı
+# GrandStarr — Dokunmatik PC Donanım Test Aracı
 
 Üretim hattında her PC'yi (ekran, dokunmatik, CPU, RAM, SSD/disk, ağ, GPU, BIOS)
 hızlıca **test eden, derecelendiren ve sahada sorun çıkaracak donanımı önceden uyaran**
@@ -8,7 +8,7 @@ J1900, i5 3.nesil gibi düşük güçlü/eski anakartlarda da çalışır ve
 
 ---
 
-## ⭐ `Endutek-PC-Test.exe` — Hepsi bir arada (ana program)
+## ⭐ `GrandStarr-PC-Test.exe` — Hepsi bir arada (ana program)
 
 Çift tıkla → pencere modunda test istasyonu (1024×768'e sığar, başlık çubuğu + **X ile kapatılır**;
 **F11** ile tam ekran aç/kapat — dead-pixel testi için). Üstte logo + canlı saat + makine adı.
@@ -139,7 +139,7 @@ Ana exe çoğu ihtiyacı karşılar; bunlar özel durumlar için:
 ---
 
 ## Başka PC'ye kurulum
-USB'ye **`Endutek-PC-Test.exe`** (+ istersen `logo.png`) kopyala → hedef PC'de çift tıkla.
+USB'ye **`GrandStarr-PC-Test.exe`** (+ istersen `logo.png`) kopyala → hedef PC'de çift tıkla.
 - Python/PowerShell gerekmez. İlk açılışta **UAC onayı** (SMART/sıcaklık/tarama için yönetici gerekli).
 - İmzasız olduğu için SmartScreen → "Daha fazla bilgi → Yine de çalıştır".
 - Logoyu değiştirmek: exe yanına yeni `logo.png` koy.
@@ -151,4 +151,4 @@ pyinstaller --onefile --noconsole --uac-admin --add-data "logo.png;." --icon app
 ```
 
 ---
-*Endutek — industrial weighing and technology*
+*GrandStarr — Hardware System*

@@ -359,8 +359,12 @@ class Wizard:
         root.title("Dokunmatik PC - Tum Testler")
         root.configure(bg=BG)
         # PENCERE MODU (tam ekran değil) - baslik çubuğu + X tusu var, 1024x768'e sigar
-        root.geometry("1000x720")
-        root.minsize(820, 600)
+        try:
+            root.tk.call("tk", "scaling", 1.0)   # arayuzu bir kademe kucult (tum yazi/alanlar)
+        except Exception:
+            pass
+        root.geometry("1000x660")
+        root.minsize(800, 540)
         try:
             root.state("normal")
         except Exception:
@@ -397,7 +401,7 @@ class Wizard:
                                   background=ACC, bordercolor=PANEL, lightcolor=ACC, darkcolor=ACC)
         except Exception:
             self.style = None
-        root.title(f"Endutek PC Test  v{APP_VERSION}")
+        root.title(f"GrandStarr PC Test  v{APP_VERSION}")
         try:
             if self.__dict__.get("logo"):
                 root.iconphoto(True, self.logo)
@@ -409,9 +413,9 @@ class Wizard:
         self.enabled = {k: tk.BooleanVar(value=True)
                         for k in ("screen", "touch", "grid", "inv", "stress", "ssd", "net", "reset")}
         self.step_state = {}    # key -> 'PASS'/'FAIL'/'WARN'/'...'
-        self.sw, self.sh = 1000, 720             # pencere ic olculeri (Configure ile guncellenir)
+        self.sw, self.sh = 1000, 660             # pencere ic olculeri (Configure ile guncellenir)
 
-        # Endutek logosu (exe yaninda ya da gomulu logo.png) - sadece kenar çubuğunda
+        # GrandStarr logosu (exe yaninda ya da gomulu logo.png) - sadece kenar çubuğunda
         self.logo = None
         try:
             lp = resource_path("logo.png")
@@ -552,11 +556,11 @@ class Wizard:
                  justify="center").pack(side="left")
         tk.Label(custom, text=" dakika", font=("Segoe UI", 13), fg=MUT, bg=BG).pack(side="left")
 
-        tk.Button(b, text="TESTE BASLA  ▶", font=("Segoe UI", 20, "bold"),
-                  bg=GREEN, fg="#06210f", relief="flat", padx=40, pady=14,
-                  command=self._start).pack(pady=18)
-        tk.Label(b, text=f"Endutek PC Test  v{APP_VERSION}   •   Uzun testlerde sıcaklık 15 sn'de bir CSV'ye loglanir   •   acil çıkış: F10",
-                 font=("Segoe UI", 10), fg=MUT, bg=BG).pack(side="bottom", pady=12)
+        tk.Label(b, text=f"GrandStarr PC Test  v{APP_VERSION}   •   Uzun testlerde sıcaklık 15 sn'de bir CSV'ye loglanır   •   acil çıkış: F10",
+                 font=("Segoe UI", 9), fg=MUT, bg=BG).pack(side="bottom", pady=8)
+        tk.Button(b, text="TESTE BAŞLA  ▶", font=("Segoe UI", 18, "bold"),
+                  bg=GREEN, fg="#06210f", relief="flat", padx=36, pady=10,
+                  command=self._start).pack(side="bottom", pady=10)
 
     def _start(self):
         try:
@@ -1390,26 +1394,31 @@ class Wizard:
             tk.Label(b, text="✓ Donanım karakteristiklerinde saha riski tespit edilmedi.",
                      font=("Segoe UI", 12), fg=GREEN, bg=BG).pack(anchor="w", padx=40, pady=2)
 
-        wrap = tk.Frame(b, bg=BG); wrap.pack(fill="both", expand=True, padx=40, pady=6)
-        txt = tk.Text(wrap, bg=PANEL, fg=FG, font=("Consolas", 11), relief="flat", height=10)
-        txt.pack(fill="both", expand=True)
-        for cat, item, val, st in self.rows:
-            txt.insert("end", f"[{st:<4}] {cat:<10} {item:<22} {val}\n")
-        txt.config(state="disabled")
-
         path = self._write_report(verdict, fails, warns)
-        link = tk.Label(b, text="📄 Rapor (açmak için tıkla): " + path, font=("Segoe UI", 11, "underline"),
+
+        # ALT BUTONLAR -> her zaman en altta sabit (icerik tassa bile gorunur)
+        btns = tk.Frame(b, bg=BG); btns.pack(side="bottom", pady=10)
+        tk.Button(btns, text="Raporu Aç", font=("Segoe UI", 13), bg=PANEL, fg=FG, relief="flat",
+                  padx=16, pady=7, command=lambda: _open(path)).pack(side="left", padx=6)
+        tk.Button(btns, text="Yeni Test", font=("Segoe UI", 13), bg=GREEN, fg="#06210f", relief="flat",
+                  padx=16, pady=7, command=self._restart).pack(side="left", padx=6)
+        tk.Button(btns, text="Çıkış", font=("Segoe UI", 13), bg=RED, fg="#2a0a0a", relief="flat",
+                  padx=16, pady=7, command=self._quit).pack(side="left", padx=6)
+        link = tk.Label(b, text="📄 Rapor (açmak için tıkla): " + path, font=("Segoe UI", 10, "underline"),
                         fg=ACC, bg=BG, cursor="hand2")
-        link.pack(anchor="w", padx=40, pady=6)
+        link.pack(side="bottom", anchor="w", padx=40, pady=(0, 2))
         link.bind("<Button-1>", lambda e: _open(path))
 
-        btns = tk.Frame(b, bg=BG); btns.pack(pady=14)
-        tk.Button(btns, text="Raporu Aç", font=("Segoe UI", 14), bg=PANEL, fg=FG, relief="flat",
-                  padx=18, pady=8, command=lambda: _open(path)).pack(side="left", padx=8)
-        tk.Button(btns, text="Yeni Test", font=("Segoe UI", 14), bg=GREEN, fg="#06210f", relief="flat",
-                  padx=18, pady=8, command=self._restart).pack(side="left", padx=8)
-        tk.Button(btns, text="Çıkış", font=("Segoe UI", 14), bg=RED, fg="#2a0a0a", relief="flat",
-                  padx=18, pady=8, command=self._quit).pack(side="left", padx=8)
+        # orta alan: sonuc tablosu (kalan alani doldurur, gerekirse kaydirilabilir)
+        wrap = tk.Frame(b, bg=BG); wrap.pack(side="top", fill="both", expand=True, padx=40, pady=6)
+        sb = tk.Scrollbar(wrap); sb.pack(side="right", fill="y")
+        txt = tk.Text(wrap, bg=PANEL, fg=FG, font=("Consolas", 10), relief="flat", height=6,
+                      yscrollcommand=sb.set)
+        txt.pack(side="left", fill="both", expand=True)
+        sb.config(command=txt.yview)
+        for cat, item, val, st in self.rows:
+            txt.insert("end", f"[{st:<4}] {cat:<11} {item:<24} {val}\n")
+        txt.config(state="disabled")
 
     def _write_report(self, verdict, fails, warns):
         stamp = time.strftime("%Y%m%d_%H%M%S")
